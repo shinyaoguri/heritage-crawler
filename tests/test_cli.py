@@ -37,3 +37,31 @@ def test_報告は取得せずに出せる(cache_dir: Path, capsys: pytest.Captu
     for code in ("101", "102", "103"):
         assert code in printed
     assert "未取得 51 地域" in printed
+
+
+def test_負の間隔は受け付けない() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["fetch-detail", "--interval", "-1"])
+
+
+def test_詳細取得の既定は逐次() -> None:
+    """並列は明示して初めて使う (ADR 0002)。"""
+    assert build_parser().parse_args(["fetch-detail"]).concurrency == 1
+
+
+@pytest.mark.parametrize("value", ["0", "99"])
+def test_ありえない並列度は受け付けない(value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["fetch-detail", "--concurrency", value])
+
+
+def test_詳細の報告は台帳が無くても動く(
+    cache_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--cache-dir", str(cache_dir), "report-detail"]) == 0
+    assert "fetch-ledger" in capsys.readouterr().out
+
+
+def test_台帳が無いまま詳細を取りに行かない(cache_dir: Path) -> None:
+    """対象が無いのに通信を始めない。何をすべきかは報告側に書いてある。"""
+    assert main(["--cache-dir", str(cache_dir), "fetch-detail"]) == 1

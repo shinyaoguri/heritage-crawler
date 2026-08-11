@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from heritage_crawler.cache import MANIFEST_VERSION, LedgerCache, LedgerEntry
+from heritage_crawler.cache import (
+    DETAIL_MANIFEST_VERSION,
+    MANIFEST_VERSION,
+    DetailCache,
+    DetailEntry,
+    LedgerCache,
+    LedgerEntry,
+)
 from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS
 
 CATEGORY = BUILDING_CATEGORIES[1]  # 102
@@ -88,5 +95,75 @@ def test_知らない形式のマニフェストは黙って使わない(cache_d
     cache = LedgerCache(cache_dir)
     cache.manifest_path.parent.mkdir(parents=True)
     cache.manifest_path.write_text(json.dumps({"version": 99, "entries": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="未対応"):
+        _ = cache.entries
+
+
+def detail_entry(**overrides: object) -> DetailEntry:
+    values: dict[str, object] = {
+        "daichou_id": "102",
+        "kanri_taishou_id": "00003904",
+        "ok": True,
+        "byte_count": 47_000,
+        "fetched_at": "2026-08-12T10:00:00+00:00",
+    }
+    values.update(overrides)
+    return DetailEntry(**values)  # type: ignore[arg-type]
+
+
+def test_詳細の保存先は台帳ID_で分ける(cache_dir: Path) -> None:
+    path = DetailCache(cache_dir).html_path("102", "00003904")
+    assert path == cache_dir / "detail" / "102" / "00003904.html.gz"
+
+
+def test_パスに使えない_ID_は取り込まない(cache_dir: Path) -> None:
+    with pytest.raises(ValueError, match="ファイル名"):
+        DetailCache(cache_dir).html_path("102", "../../etc/passwd")
+
+
+def test_詳細のマニフェストは追記して読み直せる(cache_dir: Path) -> None:
+    """2 万件を 1 件ずつ全体書き直しすると重い。追記したものが読めること。"""
+    cache = DetailCache(cache_dir)
+    cache.record(detail_entry(), b"<html></html>")
+    cache.record(detail_entry(kanri_taishou_id="23"), b"<html></html>")
+
+    lines = cache.manifest_path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0]) == {"version": DETAIL_MANIFEST_VERSION}
+    assert len(lines) == 3
+    assert sorted(DetailCache(cache_dir).entries) == ["102/00003904", "102/23"]
+
+
+def test_同じ対象は最後の結果で判断する(cache_dir: Path) -> None:
+    """失敗のあとに成功したら、成功として扱う (再試行が効く)。"""
+    cache = DetailCache(cache_dir)
+    cache.record(detail_entry(ok=False, byte_count=0, error="504"))
+    cache.record(detail_entry(), b"<html></html>")
+
+    assert DetailCache(cache_dir).failures() == []
+    assert DetailCache(cache_dir).is_done("102", "00003904") is True
+
+
+def test_失敗の記録は取得済みにしない(cache_dir: Path) -> None:
+    cache = DetailCache(cache_dir)
+    cache.record(detail_entry(ok=False, byte_count=0, error="404 を返した"))
+
+    assert cache.is_done("102", "00003904") is False
+    assert [entry.error for entry in cache.failures()] == ["404 を返した"]
+
+
+def test_欠けた行は飛ばして残りを読む(cache_dir: Path) -> None:
+    """追記の途中で電源が落ちると末尾の行が欠ける。全体を捨てない。"""
+    cache = DetailCache(cache_dir)
+    cache.record(detail_entry(), b"<html></html>")
+    with cache.manifest_path.open("a", encoding="utf-8") as manifest:
+        manifest.write('{"daichou_id": "102", "kanri_tai')
+
+    assert list(DetailCache(cache_dir).entries) == ["102/00003904"]
+
+
+def test_知らない形式の詳細マニフェストは黙って使わない(cache_dir: Path) -> None:
+    cache = DetailCache(cache_dir)
+    cache.detail_dir.mkdir(parents=True)
+    cache.manifest_path.write_text(json.dumps({"version": 99}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="未対応"):
         _ = cache.entries

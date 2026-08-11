@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from heritage_crawler.http import FetchError, PoliteClient
+from heritage_crawler.http import FetchError, PoliteClient, RateLimiter
 
 
 class FakeOpener:
@@ -90,6 +90,20 @@ def test_2_回目以降のリクエストは間隔を空ける() -> None:
 
     client.get("https://example.test/2")
     assert clock.slept == [1.5]
+
+
+def test_間隔は複数のクライアントで共有できる() -> None:
+    """並列に取りに行っても、相手から見たレートは 1 本ぶんに保つ (ADR 0002)。"""
+    clock = FakeTime()
+    limiter = RateLimiter(1.5, sleep=clock.sleep, clock=clock)
+    first = PoliteClient(opener=FakeOpener(b"one"), limiter=limiter)
+    second = PoliteClient(opener=FakeOpener(b"two"), limiter=limiter)
+
+    first.get("https://example.test/1")
+    assert clock.slept == []
+
+    second.get("https://example.test/2")
+    assert clock.slept == [1.5]  # 別のクライアントでも待つ
 
 
 def test_5xx_は間を空けて再試行する() -> None:
