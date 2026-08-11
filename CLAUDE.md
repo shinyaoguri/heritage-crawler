@@ -38,4 +38,18 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 検証コマンド
 
-実装言語は Python (ADR 0003)。具体的なコマンドは CI 整備時にここへ追記する。
+Python (ADR 0003)。CI と同じ内容をローカルで回す。
+
+```
+pip install -e '.[dev]'   # 初回のみ
+ruff check .
+mypy src
+pytest -q
+```
+
+CI ではこれを Python 3.12 / 3.13 / 3.14 のマトリクスで実行し、あわせて
+`scripts/check-pr-title.sh` で PR タイトルの Conventional Commits 形式を検査する
+(squash merge でタイトルがそのまま main のコミットメッセージになるため)。
+
+**CI からデータベースへアクセスするテストは置かない。** 外部サイトに依存する
+テストは不安定なうえ、相手先に不要な負荷をかける。
