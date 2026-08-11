@@ -149,7 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help=f"JSON Lines の書き出し先 (既定: {DEFAULT_OUTPUT_DIR})",
+        help="データリポジトリを並べた親ディレクトリ (既定: "
+        f"{DEFAULT_OUTPUT_DIR})。配下に <リポジトリ名>/data/ を作る (ADR 0009)",
     )
     return parser
 

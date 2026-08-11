@@ -235,6 +235,8 @@ class BuildReport:
     prefecture_from_address: int = 0
     prefecture_unresolved: int = 0
     missing_annexes: int = 0
+    missing_treasure_class: int = 0
+    """国宝・重文区分が読めず、重要文化財側のリポジトリへ送った棟 (ADR 0009)。"""
     files: list[str] = field(default_factory=list)
     stale_files: list[str] = field(default_factory=list)
 
@@ -247,6 +249,7 @@ class BuildReport:
             or self.name_mismatches
             or self.missing_annexes
             or self.prefecture_unresolved
+            or self.missing_treasure_class
         )
 
 

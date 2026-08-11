@@ -3,7 +3,8 @@
 外部へは一切出ない。台帳 CSV と生 HTML のキャッシュだけを読むので、スキーマを
 変えても 2 万件の取り直しは要らない (ADR 0006)。
 
-出力先は ``<出力ディレクトリ>/<分類コード>/<都道府県コード>_<ローマ字>.jsonl``。
+出力先は ``<出力ディレクトリ>/<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl``
+(ADR 0009)。``--output-dir`` はデータリポジトリを並べた親ディレクトリを指す。
 行は ``(台帳ID, 管理対象ID)`` で安定ソートし、取得順に依存させない。
 """
 
@@ -17,7 +18,16 @@ from pathlib import Path
 from typing import Any, Final
 
 from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write
-from heritage_crawler.catalog import SEARCH_AREAS, Area, Category
+from heritage_crawler.catalog import (
+    BUILDING_DATASETS,
+    CLASS_SPLIT_CATEGORIES,
+    SEARCH_AREAS,
+    Area,
+    Category,
+    Dataset,
+    dataset_for,
+    datasets_for,
+)
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
 from heritage_crawler.ledger import read_ledger_rows
 from heritage_crawler.record import BuildReport, build_record
@@ -41,7 +51,7 @@ def build_dataset(
     (2 万件のうち 1 件で全体が止まると、直すまで何も出力できない)。
     """
     report = BuildReport()
-    groups: dict[tuple[Category, Area], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[Dataset, Area], list[dict[str, Any]]] = defaultdict(list)
     seen: set[str] = set()
 
     for row in read_ledger_rows(ledger_cache, categories, areas):
@@ -55,13 +65,15 @@ def build_dataset(
         if page is None:
             continue
         built = build_record(row, page, report)
-        groups[(row.category, built.location.area)].append(built.record)
+        groups[(_dataset_of(row.category, built.record, report), built.location.area)].append(
+            built.record
+        )
         report.built += 1
         if report.built % PROGRESS_EVERY == 0:
             logger.info("%d 件組み立てた", report.built)
 
-    for (category, area), records in sorted(groups.items(), key=lambda item: _group_order(item[0])):
-        path = output_path(output_dir, category, area)
+    for (dataset, area), records in sorted(groups.items(), key=lambda item: _group_order(item[0])):
+        path = output_path(output_dir, dataset, area)
         records.sort(key=lambda record: (record["ledger_id"], record["managed_id"]))
         lines = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,9 +84,21 @@ def build_dataset(
     return report
 
 
-def output_path(output_dir: Path, category: Category, area: Area) -> Path:
-    """ADR 0004 のファイル配置。台帳キャッシュとは区切り文字が違う点に注意。"""
-    return output_dir / category.code / f"{area.code}_{area.slug}.jsonl"
+def output_path(output_dir: Path, dataset: Dataset, area: Area) -> Path:
+    """ADR 0009 のファイル配置。リポジトリ 1 つが文化財の種別 1 つに対応する。"""
+    return output_dir / dataset.repo / "data" / f"{area.code}_{area.slug}.jsonl"
+
+
+def _dataset_of(category: Category, record: dict[str, Any], report: BuildReport) -> Dataset:
+    """棟 1 件の書き先リポジトリを決める (ADR 0009)。
+
+    102 だけ国宝と重要文化財でリポジトリが分かれる。区分が読めなければ重要文化財側
+    へ送るが、黙って送ると振り分けの誤りに気付けないので件数を数える。
+    """
+    treasure_class = record.get("national_treasure_class", "")
+    if not treasure_class and category in CLASS_SPLIT_CATEGORIES:
+        report.missing_treasure_class += 1
+    return dataset_for(category, treasure_class)
 
 
 def _read_page(
@@ -91,15 +115,15 @@ def _read_page(
         return None
 
 
-def _group_order(group: tuple[Category, Area]) -> tuple[str, str]:
-    category, area = group
-    return (category.code, area.code)
+def _group_order(group: tuple[Dataset, Area]) -> tuple[int, str]:
+    dataset, area = group
+    return (BUILDING_DATASETS.index(dataset), area.code)
 
 
 def _note_stale_files(
     output_dir: Path,
     categories: Sequence[Category],
-    groups: dict[tuple[Category, Area], list[dict[str, Any]]],
+    groups: dict[tuple[Dataset, Area], list[dict[str, Any]]],
     report: BuildReport,
 ) -> None:
     """今回書かなかった既存ファイルを報せる。
@@ -107,9 +131,9 @@ def _note_stale_files(
     地域を絞って走らせるのは普通のことなので消しはしない。ただし黙っていると、
     都道府県の振り分けが変わったときに古い行が残り続ける。
     """
-    written = {output_path(output_dir, category, area) for category, area in groups}
-    for category in categories:
-        directory = output_dir / category.code
+    written = {output_path(output_dir, dataset, area) for dataset, area in groups}
+    for dataset in datasets_for(categories):
+        directory = output_dir / dataset.repo / "data"
         if not directory.is_dir():
             continue
         report.stale_files.extend(
@@ -133,6 +157,10 @@ def format_report(report: BuildReport) -> str:
     lines.extend(_anomaly_lines("CSV と詳細で名称が違う", report.name_mismatches))
     if report.missing_annexes:
         lines.append(f"附指定ありなのに一覧が空: {report.missing_annexes:,} 件")
+    if report.missing_treasure_class:
+        lines.append(
+            f"国宝・重文区分が読めず重要文化財として扱った: {report.missing_treasure_class:,} 件"
+        )
     if report.prefecture_from_address:
         lines.append(f"都道府県を所在地から決めた: {report.prefecture_from_address:,} 件")
     if report.prefecture_unresolved:

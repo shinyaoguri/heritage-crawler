@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -27,11 +28,79 @@ class Category:
 
 
 # 建造物に関連する分類。世界遺産 (901) は建造物と別軸の指定のため含めない。
-BUILDING_CATEGORIES: Final[tuple[Category, ...]] = (
-    Category("101", "登録有形文化財（建造物）", 14748),
-    Category("102", "国宝・重要文化財（建造物）", 2633),
-    Category("103", "重要伝統的建造物群保存地区", 126),
+# 名前は指定行為の呼び方に合わせた (record.DESIGNATION_KINDS と同じ 登録 / 指定 / 選定)。
+REGISTERED: Final = Category("101", "登録有形文化財（建造物）", 14748)
+DESIGNATED: Final = Category("102", "国宝・重要文化財（建造物）", 2633)
+SELECTED: Final = Category("103", "重要伝統的建造物群保存地区", 126)
+
+BUILDING_CATEGORIES: Final[tuple[Category, ...]] = (REGISTERED, DESIGNATED, SELECTED)
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """出力先のデータリポジトリ 1 つ (ADR 0009)。
+
+    分類とリポジトリは 1:1 ではない。102 (国宝・重要文化財) だけが国宝と
+    重要文化財の 2 リポジトリに分かれる。
+    """
+
+    repo: str
+    """リポジトリ名。出力ディレクトリ配下のディレクトリ名も兼ねる。"""
+
+    name: str
+    category: Category
+
+    national_treasure_class: str | None = None
+    """詳細ページの「国宝・重文区分」での絞り込み。
+
+    ``None`` は同じ分類の残り全部を受ける受け皿。区分が読めなかった棟もここへ来る。
+    """
+
+
+# ADR 0009 の対応表が正本。絞り込みのあるものを先に置き、残りを次の受け皿へ落とす。
+BUILDING_DATASETS: Final[tuple[Dataset, ...]] = (
+    Dataset("registered-tangible-cultural-properties", "登録有形文化財（建造物）", REGISTERED),
+    # 国宝は重要文化財のうちから指定されるが、リポジトリには排他に振り分ける。
+    Dataset("national-treasures", "国宝（建造物）", DESIGNATED, national_treasure_class="国宝"),
+    Dataset("important-cultural-properties", "重要文化財（建造物）", DESIGNATED),
+    Dataset(
+        "important-preservation-districts-for-groups-of-traditional-buildings",
+        "重要伝統的建造物群保存地区",
+        SELECTED,
+    ),
 )
+
+
+CLASS_SPLIT_CATEGORIES: Final = frozenset(
+    dataset.category for dataset in BUILDING_DATASETS if dataset.national_treasure_class
+)
+"""国宝・重文区分でリポジトリが分かれる分類。区分の欠けた棟に気付くために使う。"""
+
+
+def dataset_for(category: Category, national_treasure_class: str = "") -> Dataset:
+    """棟 1 件をどのデータリポジトリへ書くか決める。
+
+    >>> dataset_for(DESIGNATED, "国宝").repo
+    'national-treasures'
+    >>> dataset_for(DESIGNATED, "重要文化財").repo
+    'important-cultural-properties'
+    >>> dataset_for(DESIGNATED).repo
+    'important-cultural-properties'
+    >>> dataset_for(SELECTED).repo
+    'important-preservation-districts-for-groups-of-traditional-buildings'
+    """
+    for dataset in BUILDING_DATASETS:
+        if dataset.category != category:
+            continue
+        if dataset.national_treasure_class in (None, national_treasure_class):
+            return dataset
+    raise ValueError(f"分類 {category.code} に対応するデータリポジトリが無い")
+
+
+def datasets_for(categories: Sequence[Category]) -> list[Dataset]:
+    """指定した分類が書きうるデータリポジトリを、定義順に返す。"""
+    wanted = set(categories)
+    return [dataset for dataset in BUILDING_DATASETS if dataset.category in wanted]
 
 
 @dataclass(frozen=True)

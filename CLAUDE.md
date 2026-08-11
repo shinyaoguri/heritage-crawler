@@ -7,7 +7,8 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 国指定文化財等データベース (https://kunishitei.bunka.go.jp/bsys/index) から
 建造物に関連したデータを抽出し、GitHub に記録するクローラー本体。
 対象は分類コード 101 (登録有形文化財)・102 (国宝・重要文化財)・103 (重要伝統的
-建造物群保存地区)。データの出力先は別リポジトリ (ADR 0001)。
+建造物群保存地区)。データの出力先は**文化財の種別ごとの別リポジトリ** (ADR 0001 /
+ADR 0009)。`code4heritage` org 配下の既存リポジトリを使い、新しくは作らない。
 
 ## データソースの実態 (2026-08-11 実地調査。詳細は Issue #1 のコメント)
 
@@ -46,22 +47,25 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 - **画像は取得・再配布しない** (作品毎に個別許諾が必要。ADR 0007)
 - 文字情報は出典表示のもとで再配布できる (ADR 0007)。出力データには出典表記を
   必ず付す。コードは MIT、データは文化庁の利用規約と、ライセンスは 2 層に分ける
+- **分類コードと出力先リポジトリは 1:1 でない** (ADR 0009)。102 は詳細ページの
+  「国宝・重文区分」で `national-treasures` と `important-cultural-properties` に
+  分かれる。区分が読めない棟は重要文化財側へ送り、件数を報告に出す
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0008 に記録済み。実装は 2 段構えの取得層
+要件議論の主要な決定は ADR 0001〜0009 に記録済み。実装は 2 段構えの取得層
 (台帳・詳細) と解析・出力層まで入っている。
 
 | モジュール | 役割 |
 |---|---|
-| `src/heritage_crawler/catalog.py` | 分類・地域の語彙と詳細ページ URL の組み立て |
+| `src/heritage_crawler/catalog.py` | 分類・地域の語彙、出力先リポジトリの対応表、詳細ページ URL の組み立て |
 | `src/heritage_crawler/http.py` | 間隔を空けて逐次アクセスする HTTP クライアントとレートの共有 |
 | `src/heritage_crawler/search_page.py` | 検索応答から件数と csv-list の hidden 値を取る |
 | `src/heritage_crawler/ledger.py` | 台帳の取得手順、全国件数との突き合わせ、CSV 行の読み出し |
 | `src/heritage_crawler/detail.py` | 台帳から取得対象を作り、詳細ページを巡回する |
 | `src/heritage_crawler/detail_page.py` | 詳細ページの HTML から原文の項目を読む |
 | `src/heritage_crawler/record.py` | **出力スキーマの正本** (ラベル対応・日付・都道府県・欠損) |
-| `src/heritage_crawler/export.py` | キャッシュを走査して都道府県ごとの JSON Lines を書く |
+| `src/heritage_crawler/export.py` | キャッシュを走査して種別リポジトリごと・都道府県ごとの JSON Lines を書く |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
 | `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` / `build-records` |
 
@@ -94,6 +98,9 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
   食い違う名称・所在地から決めた都道府県は実行のたび報告に出る
 - テストの詳細ページはキーワード引数で組み立てない。Python は識別子を NFKC で
   正規化するので `種別１` (全角) が `種別1` に化ける
+- **出力先の対応表は `catalog.py` の `BUILDING_DATASETS` が正本** (ADR 0009)。
+  `--output-dir` はデータリポジトリを並べた親ディレクトリで、その配下に
+  `<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl` を書く
 
 ## 検証コマンド
 
