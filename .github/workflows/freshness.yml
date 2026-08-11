@@ -1,0 +1,66 @@
+name: freshness
+
+# 参照ドリフト (ドキュメントが指す ADR 番号・ファイルパスの陳腐化) は、変更が
+# 無い月にも静かに進むため PR の CI では捉えられない。定期実行で拾い、結果は
+# Issue に残す (セッションの記憶に頼らないための恒久的な置き場)。
+#
+# 対象サイト (国指定文化財等データベース) へはアクセスしない。定期的に相手先を
+# 叩くのは CLAUDE.md の方針に反し、リポ内部のドリフト検知に外部通信は要らない。
+
+on:
+  schedule:
+    # 毎月 1 日 09:00 JST (00:00 UTC)
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 参照ドリフトの検査
+        id: check
+        env:
+          # 本文が参照する Issue の状態を引くのに使う (詳細は check-freshness.sh)
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ./scripts/check-freshness.sh >stdout.log 2>drift.log; then
+            echo "drift=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >>"$GITHUB_OUTPUT"
+          fi
+          cat stdout.log drift.log
+
+      # ドリフトはジョブの失敗では扱わない。恒久的な記録は Issue 側に置き、
+      # 直すまで open のまま残す (同じ内容の Issue を毎月増やさないよう追記する)。
+      - name: 検出結果を Issue に起票
+        if: steps.check.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="参照ドリフト検出: ドキュメントと実体がずれている"
+          {
+            echo "\`scripts/check-freshness.sh\` が参照ドリフトを検出した。"
+            echo
+            echo '```'
+            cat drift.log
+            echo '```'
+            echo
+            echo "実行: ${RUN_URL}"
+          } >body.md
+
+          existing=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")] | .[0].number // empty")
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
