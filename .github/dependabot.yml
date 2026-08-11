@@ -1,0 +1,25 @@
+# 依存とワークフローの陳腐化防止。
+# PR タイトルは scripts/check-pr-title.sh (Conventional Commits) を通す必要があるため、
+# prefix を明示して固定する (未指定だと Dependabot はコミット履歴から推測し、
+# 外れると pr-policy が落ちる)。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    # リリース公開から PR 起票までの待機。取り下げられた不正なリリースを掴まないための猶予。
+    # security update には適用されない (脆弱性公表時は cooldown を無視して即 PR が出る)
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build

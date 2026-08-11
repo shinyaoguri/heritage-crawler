@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "heritage-crawler"
+version = "0.1.0"
+description = "国指定文化財等データベースから建造物関連データを抽出・記録するクローラー"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Shinya Oguri" }]
+keywords = ["cultural-heritage", "bunkacho", "crawler", "open-data", "japan"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.urls]
+Repository = "https://github.com/shinyaoguri/heritage-crawler"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/heritage_crawler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# 日本語の全角記号を「紛らわしい文字」として警告する規則は、
+# 本プロジェクトでは文化財の名称・項目名の大半に当たるため無効化する。
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
