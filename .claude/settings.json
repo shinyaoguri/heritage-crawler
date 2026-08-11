@@ -11,7 +11,9 @@
       "Bash(pip list:*)",
       "Bash(python -m venv:*)",
       "Bash(./scripts/check-pr-title.sh)",
-      "Bash(./scripts/test-check-pr-title.sh)"
+      "Bash(./scripts/test-check-pr-title.sh)",
+      "Bash(./scripts/check-freshness.sh)",
+      "Bash(./scripts/test-check-freshness.sh)"
     ]
   }
 }
