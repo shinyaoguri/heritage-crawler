@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+
+# 秘密情報・環境変数 (実体は gitignore 済みの .env に置く)
+.env
+.env.*
+!.env.example
+
+# エディタ・一時ファイル
+*.swp
+*.tmp
+
+# ログ
+*.log
