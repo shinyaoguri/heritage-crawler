@@ -5,8 +5,8 @@
 1. ``fetch-ledger`` で分類 × 地域の CSV を取る (153 リクエスト / 約 25 分)
 2. ``fetch-detail`` で台帳の各行から詳細ページを取る (2 万件 / 約 6 時間)
 
-どちらも中断しても取得済みを飛ばして再開する。既定の間隔は 1 秒・並列度 1 で、
-相手が公共サイトである以上むやみに縮めない (ADR 0002)。
+どちらも中断しても取得済みを飛ばして再開する。既定のレート上限は 4 req/s
+(間隔 0.25 秒) で、上限を決めるのは間隔だけ。並列度を上げても超えない (ADR 0010)。
 """
 
 from __future__ import annotations
@@ -45,8 +45,15 @@ CONTACT_ENV: Final = "HERITAGE_CRAWLER_CONTACT"
 MAX_CONCURRENCY: Final = 8
 """並列度の上限。
 
-レート自体は共有の RateLimiter が抑えるので、これ以上増やしても速くならず、
-相手側の同時接続だけが増える。
+レートの上限は間隔が決めるので (ADR 0010)、応答待ちの隙間が埋まったあとは
+これ以上増やしても速くならず、相手側の同時接続だけが増える。
+"""
+
+DEFAULT_CONCURRENCY: Final = 3
+"""詳細ページ取得の既定の並列度。
+
+応答 0.625 秒の実測に対し、間隔 0.25 秒のスロットを埋めきる本数
+(``0.625 / 0.25`` の切り上げ)。1 本では応答時間に律速され約 1.6 req/s しか出ない。
 """
 
 logger = logging.getLogger("heritage_crawler")
@@ -77,7 +84,7 @@ def _access_options(parser: argparse.ArgumentParser) -> None:
         "--interval",
         type=_seconds,
         default=DEFAULT_INTERVAL,
-        help=f"リクエスト間隔の秒数 (既定: {DEFAULT_INTERVAL})",
+        help=f"リクエスト間隔の秒数 = レート上限 (既定: {DEFAULT_INTERVAL} = 4 req/s)",
     )
     parser.add_argument(
         "--timeout", type=_seconds, default=DEFAULT_TIMEOUT, help="1 リクエストのタイムアウト秒数"
@@ -127,9 +134,9 @@ def build_parser() -> argparse.ArgumentParser:
     detail.add_argument(
         "--concurrency",
         type=_concurrency,
-        default=1,
-        help=f"同時に投げる本数 (既定: 1 = 逐次、最大 {MAX_CONCURRENCY})。"
-        "レートは並列でも 1 本ぶんに保たれる",
+        default=DEFAULT_CONCURRENCY,
+        help=f"同時に投げる本数 (既定: {DEFAULT_CONCURRENCY}、最大 {MAX_CONCURRENCY})。"
+        "レートの上限は間隔が決めるので、増やしても超えない",
     )
     detail.add_argument(
         "--limit", type=int, help="先頭から指定件数だけ取る (疎通確認や様子見に使う)"

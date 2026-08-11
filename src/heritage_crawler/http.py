@@ -1,9 +1,9 @@
 """公共サイトへ礼儀正しくアクセスするための HTTP クライアント。
 
-ADR 0002 のアクセスマナー (逐次アクセス・リクエスト間隔の挿入・User-Agent への
-連絡先記載) をここで守る。相手は文化庁のデータベースであり、こちらの都合で
-並列化しない。並列度を上げられるようにはしてあるが (ADR 0006)、レートは
-``RateLimiter`` を共有することで並列でも 1 本ぶんに収める。
+アクセスマナー (レートの上限・User-Agent への連絡先記載・gzip での転送量削減) を
+ここで守る。相手は文化庁のデータベースなので、レートの上限は間隔だけが決める
+(ADR 0010)。``RateLimiter`` を共有すれば、並列度を上げても上限は超えない —
+埋まるのは応答待ちの隙間だけで、同時に飛ぶ本数が同時接続の上限になる。
 
 依存パッケージを増やしていないのは、必要なもの (Cookie でのセッション維持と
 フォーム POST) が標準ライブラリで足りるため。CSV 出力はサーバ側セッションに
@@ -13,6 +13,7 @@ ADR 0002 のアクセスマナー (逐次アクセス・リクエスト間隔の
 
 from __future__ import annotations
 
+import gzip
 import logging
 import threading
 import time
@@ -27,9 +28,17 @@ from typing import Final, Protocol
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTACT: Final = "https://github.com/shinyaoguri/heritage-crawler"
-DEFAULT_INTERVAL: Final = 1.0
+DEFAULT_INTERVAL: Final = 0.25
+"""リクエストの間隔 = レート上限 4 req/s (ADR 0010)。"""
+
 DEFAULT_TIMEOUT: Final = 60.0
 DEFAULT_RETRIES: Final = 3
+RETRY_BACKOFF: Final = 1.0
+"""再試行の待ち時間の基数 (2 秒・4 秒と伸ばす)。
+
+**間隔から導かない。** 間隔を詰めたときに、5xx を返している相手への再試行まで
+速くなってしまうため (ADR 0010)。
+"""
 
 FormFields = Sequence[tuple[str, str]]
 """フォームの送信値。
@@ -51,6 +60,18 @@ class Fetcher(Protocol):
     def post(self, url: str, fields: FormFields) -> bytes: ...
 
 
+def _decoded(response: object) -> bytes:
+    """応答の本文を取り出す。gzip で返ってきたら展開する (ADR 0010)。
+
+    ``Content-Encoding`` を持たない応答 (テストの身代わりなど) はそのまま返す。
+    """
+    body: bytes = response.read()  # type: ignore[attr-defined]
+    headers = getattr(response, "headers", None)
+    if headers is not None and headers.get("Content-Encoding", "").lower() == "gzip":
+        return gzip.decompress(body)
+    return body
+
+
 def _package_version() -> str:
     try:
         return metadata.version("heritage-crawler")
@@ -64,14 +85,16 @@ def user_agent(contact: str = DEFAULT_CONTACT) -> str:
 
 
 class RateLimiter:
-    """リクエストの間隔を空けるゲート。
+    """リクエストの発射時刻を配るゲート (ADR 0010)。
 
-    間隔は前のリクエストの**開始**からではなく完了から測る。応答が遅いときに
-    間隔が詰まらないようにするため。
+    間隔は前のリクエストの**開始**から測る。完了から測ると応答時間がそのまま
+    上乗せされ、相手から見たレートが意図より遅い側にずれる (実測で 1 req/s の
+    つもりが 0.61 req/s になっていた)。
 
-    1 つを複数のクライアントで共有できる。並列に取りに行っても、相手から見た
-    レートは 1 本ぶんに収まる (ADR 0002 の逐次アクセスの精神を保ったまま、
-    応答待ちの時間だけを重ねられる)。
+    1 つを複数のクライアントで共有できる。**ワーカーごとに別の発射時刻を予約する**
+    ので、同じ瞬間に 2 本以上が飛ぶことはない。レートの上限は ``1/interval`` で、
+    並列度は「相手が遅くなったときにレートが自ら落ちる」上限として働く
+    (並列度 C・応答 R なら実効レートは ``min(1/interval, C/R)``)。
     """
 
     def __init__(
@@ -87,22 +110,17 @@ class RateLimiter:
         self._sleep = sleep
         self._clock = clock
         self._lock = threading.Lock()
-        self._finished_at: float | None = None
+        self._next_at: float | None = None
 
     def wait(self) -> None:
-        """前のリクエストの完了から interval 秒が経つまで待つ。"""
+        """自分の発射時刻を予約し、その時刻まで待つ。"""
         with self._lock:
-            if self._finished_at is None:
-                return
-            remaining = self.interval - (self._clock() - self._finished_at)
+            now = self._clock()
+            start_at = now if self._next_at is None else max(now, self._next_at)
+            self._next_at = start_at + self.interval
         # 眠るのはロックの外。並列時に他のワーカーまで足止めしないため。
-        if remaining > 0:
+        if (remaining := start_at - now) > 0:
             self._sleep(remaining)
-
-    def done(self) -> None:
-        """リクエストが終わったことを記録する。成否は問わない。"""
-        with self._lock:
-            self._finished_at = self._clock()
 
 
 class PoliteClient:
@@ -152,13 +170,14 @@ class PoliteClient:
     def _open(self, request: urllib.request.Request) -> bytes:
         request.add_header("User-Agent", self._user_agent)
         request.add_header("Accept-Language", "ja")
+        # 1 ページ 35 KB が約 9 KB になる。相手の転送量が減る (ADR 0010)。
+        request.add_header("Accept-Encoding", "gzip")
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
             self._limiter.wait()
             try:
                 with self._opener.open(request, timeout=self._timeout) as response:
-                    body: bytes = response.read()
-                return body
+                    return _decoded(response)
             except urllib.error.HTTPError as error:
                 error.close()
                 # 4xx はこちらの組み立てが誤っている。繰り返しても同じなので即座に諦める。
@@ -169,10 +188,8 @@ class PoliteClient:
                 last_error = error
             except (urllib.error.URLError, TimeoutError, OSError) as error:
                 last_error = error
-            finally:
-                self._limiter.done()
             if attempt < self._retries:
-                backoff = self._limiter.interval * 2**attempt
+                backoff = RETRY_BACKOFF * 2**attempt
                 logger.warning(
                     "%s %s に失敗した (%s)。%.1f 秒待って再試行する (%d/%d)",
                     request.method,
