@@ -37,8 +37,10 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0005 に記録済み。実装は未着手。
-残る論点 (スキーマ・差分検出・文化庁への確認) は Issue #1 を正本とする。
+要件議論の主要な決定は ADR 0001〜0006 に記録済み。実装は着手したところで、
+分類コードと詳細ページ URL の組み立て (`src/heritage_crawler/catalog.py`) までが入っている。
+以降の取得層・解析層・出力は Issue #6〜#11 に分解済み。
+ロードマップと残る論点 (スキーマ・差分検出・文化庁への確認) は Issue #1 を正本とする。
 
 ## 検証コマンド
 
@@ -49,11 +51,16 @@ pip install -e '.[dev]'   # 初回のみ
 ruff check .
 mypy src
 pytest -q
+./scripts/check-freshness.sh
 ```
 
 CI ではこれを Python 3.12 / 3.13 / 3.14 のマトリクスで実行し、あわせて
-`scripts/check-pr-title.sh` で PR タイトルの Conventional Commits 形式を検査する
-(squash merge でタイトルがそのまま main のコミットメッセージになるため)。
+`scripts/check-pr-title.sh` で PR タイトルの Conventional Commits 形式を
+(squash merge でタイトルがそのまま main のコミットメッセージになるため)、
+`scripts/check-freshness.sh` でドキュメントの参照ドリフト (ADR の連番と 4 節構成、
+本文が参照する ADR 番号・リポ内パス・Issue) を検査する。判定スクリプト自体の
+テストも同じジョブで回す。参照ドリフトは `.github/workflows/freshness.yml` で
+月次にも検査する — Issue の状態はコミット無しに変わるため。
 
 **CI からデータベースへアクセスするテストは置かない。** 外部サイトに依存する
 テストは不安定なうえ、相手先に不要な負荷をかける。

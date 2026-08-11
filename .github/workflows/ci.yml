@@ -39,8 +39,9 @@ jobs:
       - name: テスト (pytest)
         run: pytest -q
 
-  # squash merge では PR タイトルがそのまま main のコミットメッセージになるため、
-  # マージ前に Conventional Commits 形式を強制する。
+  # マージ前に満たすべき条件のうち Python に依らないもの。squash merge では PR
+  # タイトルがそのまま main のコミットメッセージになるため形式を強制し、あわせて
+  # ドキュメントの参照ドリフトも見る (定期実行を待たず PR の時点で潰す)。
   pr-policy:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -50,7 +51,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 判定スクリプト自体のテスト
-        run: ./scripts/test-check-pr-title.sh
+        run: |
+          ./scripts/test-check-pr-title.sh
+          ./scripts/test-check-freshness.sh
 
       - name: PR タイトルの Conventional Commits lint
         run: ./scripts/check-pr-title.sh
+
+      # gh を渡さないので Issue の状態は見ない (リポ内部の整合性だけを検査する)。
+      - name: ドキュメントの参照ドリフト検査
+        run: ./scripts/check-freshness.sh
