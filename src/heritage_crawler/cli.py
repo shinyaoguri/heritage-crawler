@@ -29,6 +29,7 @@ from heritage_crawler.detail import (
     read_targets,
     summarize_details,
 )
+from heritage_crawler.export import DEFAULT_OUTPUT_DIR, build_dataset, format_report
 from heritage_crawler.http import (
     DEFAULT_CONTACT,
     DEFAULT_INTERVAL,
@@ -139,6 +140,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     report_detail = subparsers.add_parser("report-detail", help="詳細ページの取得状況を報告する")
     _target_options(report_detail)
+
+    build = subparsers.add_parser(
+        "build-records", help="キャッシュから都道府県ごとの JSON Lines を組み立てる"
+    )
+    _target_options(build)
+    build.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"JSON Lines の書き出し先 (既定: {DEFAULT_OUTPUT_DIR})",
+    )
     return parser
 
 
@@ -169,6 +181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command.endswith("-ledger"):
         return _run_ledger(args, ledger_cache, categories, areas)
+    if args.command == "build-records":
+        return _run_build(args, ledger_cache, categories, areas)
     return _run_detail(args, ledger_cache, categories, areas)
 
 
@@ -209,6 +223,24 @@ def _run_detail(
             return status
 
     print(format_detail_summary(summarize_details(cache, targets), cache.failures()))
+    return 0
+
+
+def _run_build(
+    args: argparse.Namespace,
+    ledger_cache: LedgerCache,
+    categories: Sequence[Category],
+    areas: Sequence[Area],
+) -> int:
+    """外部へは出ない。キャッシュだけを読んで JSON Lines を書く (ADR 0004)。"""
+    report = build_dataset(
+        ledger_cache, DetailCache(args.cache_dir), categories, areas, args.output_dir
+    )
+    print(format_report(report))
+    if report.total == 0:
+        logger.error("台帳が空。先に heritage-crawler fetch-ledger を実行する")
+        return 1
+    # 異常があっても書き出したものは残す。捨てずに報告して、直すかどうかは人が決める。
     return 0
 
 

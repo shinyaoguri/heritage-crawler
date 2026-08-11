@@ -23,14 +23,9 @@ from typing import Final
 from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, detail_key
 from heritage_crawler.catalog import SEARCH_AREAS, Area, Category, detail_url
 from heritage_crawler.http import Fetcher, FetchError
-from heritage_crawler.ledger import EXPECTED_CSV_HEADER, read_csv_rows
+from heritage_crawler.ledger import read_ledger_rows
 
 logger = logging.getLogger(__name__)
-
-DAICHOU_ID_COLUMN: Final = EXPECTED_CSV_HEADER.index("台帳ID")
-KANRI_TAISHOU_ID_COLUMN: Final = EXPECTED_CSV_HEADER.index("管理対象ID")
-NAME_COLUMN: Final = EXPECTED_CSV_HEADER.index("名称")
-RIDGE_NAME_COLUMN: Final = EXPECTED_CSV_HEADER.index("棟名")
 
 PROGRESS_EVERY: Final = 100
 CONSECUTIVE_FAILURE_LIMIT: Final = 10
@@ -80,23 +75,13 @@ def read_targets(
     台帳ID は分類コードと同じ値だが、組み立てには CSV の値をそのまま使う。
     """
     targets: dict[str, Target] = {}
-    for category in categories:
-        for area in areas:
-            path = cache.csv_path(category, area)
-            if not path.exists():
-                continue
-            for row in read_csv_rows(path.read_bytes()):
-                if len(row) <= RIDGE_NAME_COLUMN:
-                    logger.warning("列が足りない行を飛ばす (%s): %r", path, row)
-                    continue
-                target = Target(
-                    daichou_id=row[DAICHOU_ID_COLUMN],
-                    kanri_taishou_id=row[KANRI_TAISHOU_ID_COLUMN],
-                    name=" ".join(
-                        part for part in (row[NAME_COLUMN], row[RIDGE_NAME_COLUMN]) if part
-                    ),
-                )
-                targets.setdefault(target.key, target)
+    for row in read_ledger_rows(cache, categories, areas):
+        target = Target(
+            daichou_id=row.get("台帳ID"),
+            kanri_taishou_id=row.get("管理対象ID"),
+            name=" ".join(part for part in (row.get("名称"), row.get("棟名")) if part),
+        )
+        targets.setdefault(target.key, target)
     return list(targets.values())
 
 

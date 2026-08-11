@@ -10,14 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeFetcher, make_csv
+from conftest import FakeFetcher, make_csv, make_row
 from heritage_crawler.cache import DetailCache, LedgerCache, LedgerEntry
 from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS
 from heritage_crawler.detail import (
-    DAICHOU_ID_COLUMN,
-    KANRI_TAISHOU_ID_COLUMN,
-    NAME_COLUMN,
-    RIDGE_NAME_COLUMN,
     DetailError,
     Target,
     fetch_details,
@@ -26,7 +22,6 @@ from heritage_crawler.detail import (
     read_targets,
     summarize_details,
 )
-from heritage_crawler.ledger import EXPECTED_CSV_HEADER
 
 CATEGORY = BUILDING_CATEGORIES[1]  # 102
 
@@ -34,12 +29,14 @@ HTML = "<html><body>琵琶湖疏水施設 第一トンネル</body></html>".enco
 
 
 def csv_row(kanri_taishou_id: str, name: str = "琵琶湖疏水施設", ridge: str = "") -> list[str]:
-    row = [""] * len(EXPECTED_CSV_HEADER)
-    row[DAICHOU_ID_COLUMN] = CATEGORY.code
-    row[KANRI_TAISHOU_ID_COLUMN] = kanri_taishou_id
-    row[NAME_COLUMN] = name
-    row[RIDGE_NAME_COLUMN] = ridge
-    return row
+    return make_row(
+        {
+            "台帳ID": CATEGORY.code,
+            "管理対象ID": kanri_taishou_id,
+            "名称": name,
+            "棟名": ridge,
+        }
+    )
 
 
 def ledger_with(cache_dir: Path, **areas: list[list[str]]) -> LedgerCache:

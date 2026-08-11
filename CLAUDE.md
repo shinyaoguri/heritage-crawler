@@ -49,22 +49,25 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0007 に記録済み。実装は 2 段構えの取得層
-(台帳・詳細) まで入っている。
+要件議論の主要な決定は ADR 0001〜0008 に記録済み。実装は 2 段構えの取得層
+(台帳・詳細) と解析・出力層まで入っている。
 
 | モジュール | 役割 |
 |---|---|
 | `src/heritage_crawler/catalog.py` | 分類・地域の語彙と詳細ページ URL の組み立て |
 | `src/heritage_crawler/http.py` | 間隔を空けて逐次アクセスする HTTP クライアントとレートの共有 |
 | `src/heritage_crawler/search_page.py` | 検索応答から件数と csv-list の hidden 値を取る |
-| `src/heritage_crawler/ledger.py` | 台帳の取得手順と、全国件数との突き合わせ |
+| `src/heritage_crawler/ledger.py` | 台帳の取得手順、全国件数との突き合わせ、CSV 行の読み出し |
 | `src/heritage_crawler/detail.py` | 台帳から取得対象を作り、詳細ページを巡回する |
+| `src/heritage_crawler/detail_page.py` | 詳細ページの HTML から原文の項目を読む |
+| `src/heritage_crawler/record.py` | **出力スキーマの正本** (ラベル対応・日付・都道府県・欠損) |
+| `src/heritage_crawler/export.py` | キャッシュを走査して都道府県ごとの JSON Lines を書く |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
-| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` |
+| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` / `build-records` |
 
 依存パッケージは増やしていない (標準ライブラリで足りる)。
-残る解析層・出力は Issue #8〜#10 に分解済み。
-ロードマップと残る論点 (スキーマ・差分検出) は Issue #1 を正本とする。
+残る出力先リポジトリと月次更新は Issue #9・#10。
+ロードマップと残る論点 (差分検出) は Issue #1 を正本とする。
 
 ### 取得層の作り (#6 / #7)
 
@@ -74,6 +77,23 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
   拾い直す。ただし**連続失敗が続いたら打ち切る** (相手が落ちているか弾かれている)
 - 並列度は設定で変えられるが (ADR 0006)、`RateLimiter` を共有するので相手から
   見たレートは並列でも 1 本ぶん。増えるのは同時接続だけ
+
+### 解析・出力層の作り (#8)
+
+- **スキーマの正本は `record.py` の `FIELD_KEYS`**、決定の根拠は ADR 0008。
+  読み取り (`detail_page.py`) とスキーマ (`record.py`) を分けてあるので、
+  サイト側の表記が変わっても直す場所は 1 つ
+- **詳細ページの項目は分類ごとに違う。** 名前の違う同義の項目は同じキーへ寄せる
+  (指定番号 / 登録番号 / 告示番号 → `designation_number` など)
+- **CSV の列は分類によって意味が変わる** (101 の `重文指定年月日` 列は登録年月日、
+  102 の `種別1` 列は国宝・重文区分)。CSV から採るのは緯度経度だけ
+- 詳細ページの HTML は**ラベルが数値文字参照で書かれている**ことがある
+  (本文側の解説文の見出し)。正規表現ではなく HTML パーサで読む
+- 解説文は本文側の欄とモーダルの `textarea` の両方にある。改行が残るのは後者
+- **想定外は捨てずに `BuildReport` へ。** 未知のラベル・読めない日付・CSV と
+  食い違う名称・所在地から決めた都道府県は実行のたび報告に出る
+- テストの詳細ページはキーワード引数で組み立てない。Python は識別子を NFKC で
+  正規化するので `種別１` (全角) が `種別1` に化ける
 
 ## 検証コマンド
 

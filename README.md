@@ -15,7 +15,9 @@
 1. 分類 × 都道府県で検索して CSV の台帳を取得する (緯度経度はここにしかない)
 2. 台帳の `(台帳ID, 管理対象ID)` から詳細ページ URL を組み立てて取得する
    (解説文・構造及び形式等・員数などはここにしかない)
-3. 両者を `(台帳ID, 管理対象ID)` で結合して JSON Lines を書き出す
+3. 両者を `(台帳ID, 管理対象ID)` で結合し、都道府県ごとの JSON Lines を書き出す
+   ([ADR 0004](docs/decisions/0004-output-jsonl-per-prefecture.md) /
+   [ADR 0008](docs/decisions/0008-normalize-schema-detail-page-wins.md))
 
 初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の月次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
@@ -28,10 +30,11 @@ heritage-crawler fetch-ledger     # 1 段目: 分類 × 地域の CSV をキャ�
 heritage-crawler report-ledger    # 取得状況と網羅性を確かめる
 heritage-crawler fetch-detail     # 2 段目: 台帳の各行から詳細ページをキャッシュへ
 heritage-crawler report-detail    # 詳細ページの取得状況を確かめる
+heritage-crawler build-records    # キャッシュから JSON Lines を組み立てる
 ```
 
-どちらも `cache/` 配下へ生の取得物のまま置き、**中断しても同じコマンドで
-取得済みを飛ばして再開する**。共通のオプションは次のとおり。
+取得はいずれも `cache/` 配下へ生の取得物のまま置き、**中断しても同じコマンドで
+取得済みを飛ばして再開する**。取得系に共通のオプションは次のとおり。
 
 - `--interval` — リクエスト間隔の秒数 (既定 1.0)。逐次アクセスは既定のふるまい
 - `--contact` — User-Agent に載せる連絡先 (環境変数 `HERITAGE_CRAWLER_CONTACT` でも指定できる)
@@ -59,6 +62,25 @@ heritage-crawler report-detail    # 詳細ページの取得状況を確かめ�
 - `--limit` — 先頭から指定件数だけ取る (疎通確認や様子見に使う)
 - `--concurrency` — 同時に投げる本数 (既定 1 = 逐次)。**レートは並列でも
   1 本ぶんに保たれる**ので、増えるのは相手側の同時接続だけ
+
+### 3 段目 — `build-records`
+
+キャッシュだけを読んで、都道府県ごとの JSON Lines を `data/` へ書き出す
+(通信はしない)。スキーマを変えても 2 万件を取り直さずに済む。
+
+```
+data/<分類コード>/<都道府県コード>_<ローマ字>.jsonl   例: data/102/29_nara.jsonl
+```
+
+キーは英数字に正規化し、分類ごとに名前の違う項目 (指定番号 / 登録番号 /
+告示番号など) は同じキーへ寄せる。日付は ISO 8601、値が空のキーは出さない。
+重複する項目は詳細ページを正とし、CSV からは緯度経度だけを採る
+([ADR 0008](docs/decisions/0008-normalize-schema-detail-page-wins.md) が対応表を含む正本、
+実装は `src/heritage_crawler/record.py`)。
+
+対応表に無いラベル・日付として読めない値・CSV と食い違う名称・所在地から
+決めた都道府県は、**捨てずに実行のたび報告に出る**。サイト側の項目が増えたことに
+気付けるのはここだけなので、報告に出たら対応表を見直す。
 
 ## データの出典と利用条件
 

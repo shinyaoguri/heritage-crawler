@@ -65,3 +65,19 @@ def test_詳細の報告は台帳が無くても動く(
 def test_台帳が無いまま詳細を取りに行かない(cache_dir: Path) -> None:
     """対象が無いのに通信を始めない。何をすべきかは報告側に書いてある。"""
     assert main(["--cache-dir", str(cache_dir), "fetch-detail"]) == 1
+
+
+def test_台帳が無ければ組み立ては失敗させる(cache_dir: Path, tmp_path: Path) -> None:
+    """空のデータリポジトリを黙って作らない。"""
+    status = main(
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "build-records",
+            "--output-dir",
+            str(tmp_path / "data"),
+        ]
+    )
+
+    assert status == 1
+    assert not (tmp_path / "data").exists()
