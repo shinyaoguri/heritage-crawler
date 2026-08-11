@@ -24,3 +24,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# クロールのキャッシュ・作業データ (リポジトリにはコミットしない: ADR 0006)
+cache/
+data/
