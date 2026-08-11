@@ -80,6 +80,10 @@ done
 # (5) 本文が参照する Issue が実在し、まだ open か。
 #     Issue の状態はコミット無しに変わるため PR の CI では捉えられず、定期実行で
 #     しか拾えない (CLAUDE.md は Issue #1 を残る論点の正本として参照している)。
+#
+#     ただし ADR は決定時点の記録であり、参照先が後からクローズされるのは正常。
+#     ADR に限って「閉じた」は見逃し、実在しない番号 (タイポ) だけを拾う。
+#     捉えたいのは生きた参照のドリフトであって、歴史的記述ではない。
 #     gh が使えない・remote が無い環境では黙って飛ばす。
 if command -v gh >/dev/null 2>&1 &&
   git remote get-url origin >/dev/null 2>&1 &&
@@ -89,7 +93,7 @@ if command -v gh >/dev/null 2>&1 &&
       [ -n "$n" ] || continue
       if ! state=$(gh issue view "$n" --json state --jq .state 2>/dev/null); then
         report "${f} が実在しない Issue #${n} を参照している"
-      elif [ "$state" != "OPEN" ]; then
+      elif [ "$state" != "OPEN" ] && [[ $f != "$adr_dir/"* ]]; then
         report "${f} が閉じた Issue #${n} を参照している (state=${state})"
       fi
     done < <(grep -oE 'Issue #[0-9]+' "$f" | grep -oE '[0-9]+' | sort -u)

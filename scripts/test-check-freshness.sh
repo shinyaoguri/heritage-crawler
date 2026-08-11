@@ -45,9 +45,28 @@ make_fixture() {
   echo "$dir"
 }
 
+# Issue の検査 (5) を動かせるようにする。gh と origin が揃って初めて走るため、
+# 応答を固定した gh の身代わりと、当たり先の無い origin を置く
+# (#1 は open、#2 は closed、それ以外は実在しない)。
+with_fake_gh() {
+  local dir=$1
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "auth status") exit 0 ;;
+  "issue view 1 "*) echo OPEN ;;
+  "issue view 2 "*) echo CLOSED ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$dir/bin/gh"
+  git -C "$dir" remote add origin https://example.invalid/owner/repo.git
+}
+
 expect() {
   local want=$1 name=$2 dir=$3 got
-  (cd "$dir" && bash "$target") >/dev/null 2>&1
+  (cd "$dir" && PATH="$dir/bin:$PATH" bash "$target") >/dev/null 2>&1
   got=$?
   if [ "$got" -ne "$want" ]; then
     # 日本語の閉じ括弧が変数名の一部として解釈されるため、必ず ${} で括る
@@ -84,6 +103,34 @@ d=$(make_fixture)
 printf '\n`src/gone.py` を参照する。\n' >>"$d/README.md"
 git -C "$d" add -A
 expect 1 "実在しないパス参照" "$d"
+
+# 生きた参照が閉じた Issue を指している (ADR 以外)
+d=$(make_fixture)
+with_fake_gh "$d"
+printf '\n残る論点は Issue #2 を正本とする。\n' >>"$d/README.md"
+git -C "$d" add -A
+expect 1 "閉じた Issue 参照 (ADR 以外)" "$d"
+
+# ADR が閉じた Issue を指している。ADR は決定時点の記録なので正常
+d=$(make_fixture)
+with_fake_gh "$d"
+printf '\nIssue #2 の議論から起こした。\n' >>"$d/docs/decisions/0001-first-decision.md"
+git -C "$d" add -A
+expect 0 "閉じた Issue 参照 (ADR)" "$d"
+
+# 実在しない Issue はタイポなので ADR でも拾う
+d=$(make_fixture)
+with_fake_gh "$d"
+printf '\nIssue #999 の議論から起こした。\n' >>"$d/docs/decisions/0001-first-decision.md"
+git -C "$d" add -A
+expect 1 "実在しない Issue 参照 (ADR)" "$d"
+
+# 開いている Issue への参照は通る
+d=$(make_fixture)
+with_fake_gh "$d"
+printf '\n残る論点は Issue #1 を正本とする。\n' >>"$d/README.md"
+git -C "$d" add -A
+expect 0 "開いた Issue 参照" "$d"
 
 # ADR が 1 件も無い
 d=$(make_fixture)
