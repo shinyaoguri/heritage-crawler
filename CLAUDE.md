@@ -49,21 +49,31 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0007 に記録済み。実装は 2 段構えの 1 段目
-(台帳取得層) まで入っている。
+要件議論の主要な決定は ADR 0001〜0007 に記録済み。実装は 2 段構えの取得層
+(台帳・詳細) まで入っている。
 
 | モジュール | 役割 |
 |---|---|
 | `src/heritage_crawler/catalog.py` | 分類・地域の語彙と詳細ページ URL の組み立て |
-| `src/heritage_crawler/http.py` | 間隔を空けて逐次アクセスする HTTP クライアント |
+| `src/heritage_crawler/http.py` | 間隔を空けて逐次アクセスする HTTP クライアントとレートの共有 |
 | `src/heritage_crawler/search_page.py` | 検索応答から件数と csv-list の hidden 値を取る |
 | `src/heritage_crawler/ledger.py` | 台帳の取得手順と、全国件数との突き合わせ |
-| `src/heritage_crawler/cache.py` | CSV の置き場とマニフェスト (再開の判断) |
-| `src/heritage_crawler/cli.py` | `heritage-crawler fetch-ledger` / `report-ledger` |
+| `src/heritage_crawler/detail.py` | 台帳から取得対象を作り、詳細ページを巡回する |
+| `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
+| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` |
 
 依存パッケージは増やしていない (標準ライブラリで足りる)。
-残る詳細取得層・解析層・出力は Issue #7〜#10 に分解済み。
+残る解析層・出力は Issue #8〜#10 に分解済み。
 ロードマップと残る論点 (スキーマ・差分検出) は Issue #1 を正本とする。
+
+### 取得層の作り (#6 / #7)
+
+- 台帳のマニフェストは JSON 全体を書き直し、詳細のマニフェストは JSON Lines へ
+  追記する。**件数が 2 桁違う** (153 件 対 20,461 件) ため書き方を変えてある
+- 詳細ページは 1 件失敗しても止めない。記録して次へ進み `--retry-failed` で
+  拾い直す。ただし**連続失敗が続いたら打ち切る** (相手が落ちているか弾かれている)
+- 並列度は設定で変えられるが (ADR 0006)、`RateLimiter` を共有するので相手から
+  見たレートは並列でも 1 本ぶん。増えるのは同時接続だけ
 
 ## 検証コマンド
 
