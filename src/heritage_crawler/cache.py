@@ -119,7 +119,7 @@ class LedgerCache:
         if csv_bytes:
             path = self.csv_path(category, area)
             path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(path, csv_bytes)
+            atomic_write(path, csv_bytes)
         self.entries[entry_key(category, area)] = entry
         self._save()
 
@@ -130,7 +130,7 @@ class LedgerCache:
             "whole_counts": dict(sorted(self._whole_counts.items())),
             "entries": {key: asdict(entry) for key, entry in sorted(self.entries.items())},
         }
-        _atomic_write(
+        atomic_write(
             self.manifest_path,
             (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
         )
@@ -244,7 +244,7 @@ class DetailCache:
             path = self.html_path(entry.daichou_id, entry.kanri_taishou_id)
             path.parent.mkdir(parents=True, exist_ok=True)
             # mtime を 0 に固定して、同じ HTML なら同じバイト列になるようにする。
-            _atomic_write(path, gzip.compress(html, mtime=0))
+            atomic_write(path, gzip.compress(html, mtime=0))
         with self._lock:
             self.entries[detail_key(entry.daichou_id, entry.kanri_taishou_id)] = entry
             self._append(entry)
@@ -262,7 +262,8 @@ class DetailCache:
         return gzip.decompress(self.html_path(daichou_id, kanri_taishou_id).read_bytes())
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def atomic_write(path: Path, data: bytes) -> None:
+    """一時ファイル経由で置き換える。途中で落ちても中途半端な内容を残さない。"""
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_bytes(data)
     os.replace(temporary, path)

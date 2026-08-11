@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
@@ -63,6 +63,50 @@ EXPECTED_CSV_HEADER: Final[tuple[str, ...]] = (
 
 class LedgerError(RuntimeError):
     """台帳の取得結果が期待した形をしていない。"""
+
+
+@dataclass(frozen=True)
+class LedgerRow:
+    """キャッシュ済み CSV の 1 行。列は名前で引く。
+
+    列の**名前が同じでも中身の意味は分類によって変わる** (101 の
+    ``重文指定年月日`` 列には登録年月日が入る)。値をそのまま使う前に、
+    その分類で何を指す列かを確かめること (ADR 0008)。
+    """
+
+    category: Category
+    values: tuple[str, ...]
+
+    def get(self, column: str) -> str:
+        return self.values[EXPECTED_CSV_HEADER.index(column)]
+
+    @property
+    def key(self) -> str:
+        """``(台帳ID, 管理対象ID)``。詳細ページと結び付ける唯一のキー。"""
+        return f"{self.get('台帳ID')}/{self.get('管理対象ID')}"
+
+
+def read_ledger_rows(
+    cache: LedgerCache,
+    categories: Sequence[Category],
+    areas: Sequence[Area] = SEARCH_AREAS,
+) -> Iterator[LedgerRow]:
+    """キャッシュ済みの台帳 CSV を分類 × 地域の順に読む。
+
+    重複は落とさない。同じ棟が複数の地域の CSV に現れることがあるため
+    (102 の琵琶湖疏水施設が滋賀県と京都府の両方に出る)、必要な側で
+    ``LedgerRow.key`` を使って落とす。
+    """
+    for category in categories:
+        for area in areas:
+            path = cache.csv_path(category, area)
+            if not path.exists():
+                continue
+            for row in read_csv_rows(path.read_bytes()):
+                if len(row) != len(EXPECTED_CSV_HEADER):
+                    logger.warning("列数が合わない行を飛ばす (%s): %r", path, row)
+                    continue
+                yield LedgerRow(category=category, values=tuple(row))
 
 
 def search_fields(csrf_token: str, category: Category, area_name: str) -> FormFields:

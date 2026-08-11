@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,14 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def make_row(values: Mapping[str, str]) -> list[str]:
+    """CSV の 1 行を列名で組み立てる。指定しなかった列は空にする。"""
+    unknown = set(values) - set(EXPECTED_CSV_HEADER)
+    if unknown:
+        raise AssertionError(f"CSV に無い列名を指定した: {sorted(unknown)}")
+    return [values.get(column, "") for column in EXPECTED_CSV_HEADER]
 
 
 def make_csv(rows: Sequence[Sequence[str]], header: Sequence[str] = EXPECTED_CSV_HEADER) -> bytes:
