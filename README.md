@@ -20,6 +20,27 @@
 初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の月次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
 
+## 使い方
+
+```bash
+pip install -e .
+heritage-crawler fetch-ledger     # 1 段目: 分類 × 地域の CSV をキャッシュへ
+heritage-crawler report-ledger    # 取得状況と網羅性を確かめる
+```
+
+`fetch-ledger` は 3 分類 × 51 地域 (47 都道府県 + ２県以上 + 地域を定めない +
+未正規化の値 2 つ) を順に取得し、`cache/` 配下へ生の CSV のまま置く。
+**中断しても同じコマンドで取得済みを飛ばして再開する**。
+
+分類ごとに地域で絞らない検索も 1 回行い、その全国件数と地域合計を突き合わせて
+網羅性を確かめる。差が出たら報告に出る (負 = どの地域でも引けない指定がある、
+正 = 地域をまたぐ指定が重複している)。
+
+- `--interval` — リクエスト間隔の秒数 (既定 1.0)。逐次アクセスは既定のふるまい
+- `--contact` — User-Agent に載せる連絡先 (環境変数 `HERITAGE_CRAWLER_CONTACT` でも指定できる)
+- `--category` / `--area` — 対象を絞る (繰り返し指定できる)
+- `--force` — 取得済みも取り直す
+
 ## データの出典と利用条件
 
 データベースの掲載情報の著作権は文化庁にあり、

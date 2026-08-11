@@ -4,9 +4,20 @@
 データベースで 200 が返ることを確認済みで、ここではその形を崩さないことを守る。
 """
 
+import re
+
 import pytest
 
-from heritage_crawler import BUILDING_CATEGORIES, detail_url
+from conftest import fixture
+from heritage_crawler import (
+    BUILDING_CATEGORIES,
+    IRREGULAR_AREAS,
+    NON_PREFECTURE_AREAS,
+    PREFECTURES,
+    SEARCH_AREAS,
+    SELECTABLE_AREAS,
+    detail_url,
+)
 
 
 def test_detail_url_短い連番形式() -> None:
@@ -38,3 +49,34 @@ def test_分類コードは文字列で保持する() -> None:
     """CSV の台帳ID と突き合わせるため、数値にせず文字列のまま扱う。"""
     for category in BUILDING_CATEGORIES:
         assert isinstance(category.code, str)
+
+
+def test_選べる地域は_47_都道府県と_2_つの受け皿() -> None:
+    """２県以上・地域を定めない を外すと、都道府県で引けない指定を取りこぼす。"""
+    assert len(PREFECTURES) == 47
+    assert [area.name for area in NON_PREFECTURE_AREAS] == ["２県以上", "地域を定めない"]
+    assert len(SELECTABLE_AREAS) == 49
+
+
+def test_地域の並びと表記が検索フォームの_option_と一致する() -> None:
+    """送る値は select の option そのもの。表記が 1 文字でもずれると 0 件になる。"""
+    options = re.findall(r'<option value="([^"]*)">', fixture("search_index.html"))
+    assert [value for value in options if value] == [area.name for area in SELECTABLE_AREAS]
+
+
+def test_未正規化の都道府県値も分割軸に含める() -> None:
+    """seat_pref は格納値の完全一致。表示名でない値の行は option では引けない。"""
+    assert [area.name for area in IRREGULAR_AREAS] == ["98", "1"]
+    assert SEARCH_AREAS == SELECTABLE_AREAS + IRREGULAR_AREAS
+
+
+def test_地域のコードと_slug_は重複しない() -> None:
+    """どちらもキャッシュのファイル名になるため、衝突すると上書きが起きる。"""
+    assert len({area.code for area in SEARCH_AREAS}) == len(SEARCH_AREAS)
+    assert len({area.slug for area in SEARCH_AREAS}) == len(SEARCH_AREAS)
+
+
+def test_slug_は_ASCII_に限る() -> None:
+    """日本語のファイル名は macOS の NFD 正規化で同一性が崩れ、再開判定がずれる。"""
+    for area in SEARCH_AREAS:
+        assert re.fullmatch(r"[a-z][a-z0-9-]*", area.slug), area
