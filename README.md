@@ -39,7 +39,7 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 取得はいずれも `cache/` 配下へ生の取得物のまま置き、**中断しても同じコマンドで
 取得済みを飛ばして再開する**。取得系に共通のオプションは次のとおり。
 
-- `--interval` — リクエスト間隔の秒数 (既定 1.0)。逐次アクセスは既定のふるまい
+- `--interval` — リクエスト間隔の秒数 = レートの上限 (既定 0.25 = 4 req/s)
 - `--contact` — User-Agent に載せる連絡先 (環境変数 `HERITAGE_CRAWLER_CONTACT` でも指定できる)
 - `--category` / `--area` — 対象を絞る (繰り返し指定できる)
 - `--force` — 取得済みも取り直す
@@ -56,15 +56,16 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 ### 2 段目 — `fetch-detail`
 
 台帳の各行の `(台帳ID, 管理対象ID)` から詳細ページの URL を組み立てて巡回し、
-生 HTML を gzip でキャッシュへ落とす (棟単位で 20,461 件 / 1 秒間隔で約 6 時間)。
+生 HTML を gzip でキャッシュへ落とす (棟単位で 20,461 件 / 4 req/s で約 1.4 時間)。
 解析はしない — パース仕様を変えるたびに 2 万ページを取り直さずに済むよう、
 取得と解析を分けてある ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
 
 - 取得に失敗しても止まらない。記録して次へ進み、`--retry-failed` で拾い直す
 - 続けて失敗したら打ち切る (相手が落ちているときに叩き続けないため)
 - `--limit` — 先頭から指定件数だけ取る (疎通確認や様子見に使う)
-- `--concurrency` — 同時に投げる本数 (既定 1 = 逐次)。**レートは並列でも
-  1 本ぶんに保たれる**ので、増えるのは相手側の同時接続だけ
+- `--concurrency` — 同時に投げる本数 (既定 3)。**レートの上限は間隔だけが決める**
+  ので、増やしても超えない。埋まるのは応答待ちの隙間で、増えるのは同時接続だけ
+  ([ADR 0010](docs/decisions/0010-rate-limit-by-request-start.md))
 
 ### 3 段目 — `build-records`
 
@@ -119,7 +120,8 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 上記を加工して作成
 ```
 
-データベースへのアクセスは逐次・間隔を空けて行い、User-Agent に連絡先を記載する。
+データベースへのアクセスはレートに上限を設けて行い、User-Agent に連絡先を記載する
+([ADR 0010](docs/decisions/0010-rate-limit-by-request-start.md))。
 
 ## 開発
 
