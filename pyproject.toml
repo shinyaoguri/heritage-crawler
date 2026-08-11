@@ -29,6 +29,9 @@ dev = [
     "mypy>=1.11",
 ]
 
+[project.scripts]
+heritage-crawler = "heritage_crawler.cli:main"
+
 [project.urls]
 Repository = "https://github.com/shinyaoguri/heritage-crawler"
 
