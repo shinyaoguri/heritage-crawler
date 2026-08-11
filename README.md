@@ -4,9 +4,10 @@
 建造物に関連したデータを抽出し、JSON Lines として記録するクローラー。
 
 対象は文化財分類コード 101 (登録有形文化財)・102 (国宝・重要文化財)・
-103 (重要伝統的建造物群保存地区)。抽出したデータの出力先は別リポジトリで、
-このリポジトリはクローラー本体のみを持つ
-([ADR 0001](docs/decisions/0001-split-repositories-by-heritage-type.md))。
+103 (重要伝統的建造物群保存地区)。抽出したデータの出力先は文化財の種別ごとの
+別リポジトリで、このリポジトリはクローラー本体のみを持つ
+([ADR 0001](docs/decisions/0001-split-repositories-by-heritage-type.md) /
+[ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))。
 
 ## しくみ
 
@@ -15,9 +16,11 @@
 1. 分類 × 都道府県で検索して CSV の台帳を取得する (緯度経度はここにしかない)
 2. 台帳の `(台帳ID, 管理対象ID)` から詳細ページ URL を組み立てて取得する
    (解説文・構造及び形式等・員数などはここにしかない)
-3. 両者を `(台帳ID, 管理対象ID)` で結合し、都道府県ごとの JSON Lines を書き出す
+3. 両者を `(台帳ID, 管理対象ID)` で結合し、種別ごとのリポジトリへ都道府県ごとの
+   JSON Lines を書き出す
    ([ADR 0004](docs/decisions/0004-output-jsonl-per-prefecture.md) /
-   [ADR 0008](docs/decisions/0008-normalize-schema-detail-page-wins.md))
+   [ADR 0008](docs/decisions/0008-normalize-schema-detail-page-wins.md) /
+   [ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))
 
 初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の月次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
@@ -65,12 +68,27 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 
 ### 3 段目 — `build-records`
 
-キャッシュだけを読んで、都道府県ごとの JSON Lines を `data/` へ書き出す
-(通信はしない)。スキーマを変えても 2 万件を取り直さずに済む。
+キャッシュだけを読んで、都道府県ごとの JSON Lines を書き出す (通信はしない)。
+スキーマを変えても 2 万件を取り直さずに済む。
+
+`--output-dir` はデータリポジトリを並べた**親ディレクトリ**を指す
+([ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))。
 
 ```
-data/<分類コード>/<都道府県コード>_<ローマ字>.jsonl   例: data/102/29_nara.jsonl
+<出力ディレクトリ>/<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl
+例: national-treasures/data/29_nara.jsonl
 ```
+
+出力先は文化財の種別ごとに分かれる。分類コードとリポジトリは 1:1 ではなく、
+102 だけが詳細ページの「国宝・重文区分」で 2 リポジトリに分かれる
+(定義は `src/heritage_crawler/catalog.py` の `BUILDING_DATASETS` が正本)。
+
+| リポジトリ | 取得対象 |
+|---|---|
+| `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） |
+| `national-treasures` | 102 のうち国宝 |
+| `important-cultural-properties` | 102 のうち重要文化財 |
+| `important-preservation-districts-for-groups-of-traditional-buildings` | 103 重要伝統的建造物群保存地区 |
 
 キーは英数字に正規化し、分類ごとに名前の違う項目 (指定番号 / 登録番号 /
 告示番号など) は同じキーへ寄せる。日付は ISO 8601、値が空のキーは出さない。
