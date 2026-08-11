@@ -6,6 +6,7 @@ FakeFetcher を挟んでいるので外部サイトへは出ない (CLAUDE.md)�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from heritage_crawler.ledger import (
     search_fields,
     summarize,
 )
+from heritage_crawler.search_page import ParseError
 
 CATEGORY = BUILDING_CATEGORIES[1]  # 102
 HOKKAIDO = SEARCH_AREAS[0]
@@ -36,17 +38,36 @@ SAMPLE_ROW = [
 ]
 
 
-def search_response(fields: tuple[tuple[str, str], ...]) -> bytes:
-    """北海道は 34 件、それ以外は 0 件の応答を返す。"""
-    hit = dict(fields)["seat_pref"] == HOKKAIDO.name
-    return fixture("search_hit.html" if hit else "search_empty.html").encode("utf-8")
+WHOLE_COUNT = 40
+"""全国件数。北海道の 34 件だけでは 6 件届かない、という状況を作るための値。"""
 
 
-def make_fetcher() -> FakeFetcher:
+def whole_page(count: int) -> bytes:
+    return (
+        f'<table><tr><td class="searchnum">{count}件中 1件から20件のデータです。</td></tr>'
+        '<form action="/utile/csv-list"><input type="hidden" name="page_no" value="1"/></form>'
+        "</table>"
+    ).encode()
+
+
+def search_responder(whole: int = WHOLE_COUNT) -> Callable[[tuple[tuple[str, str], ...]], bytes]:
+    """地域なし = 全国、北海道 = 34 件、それ以外 = 0 件 を返す応答。"""
+
+    def respond(fields: tuple[tuple[str, str], ...]) -> bytes:
+        area_name = dict(fields)["seat_pref"]
+        if not area_name:
+            return whole_page(whole)
+        hit = area_name == HOKKAIDO.name
+        return fixture("search_hit.html" if hit else "search_empty.html").encode("utf-8")
+
+    return respond
+
+
+def make_fetcher(whole: int = WHOLE_COUNT) -> FakeFetcher:
     return FakeFetcher(
         {
             INDEX_URL: fixture("search_index.html").encode("utf-8"),
-            SEARCH_URL: search_response,
+            SEARCH_URL: search_responder(whole),
             CSV_URL: make_csv([SAMPLE_ROW] * 85),
         }
     )
@@ -54,7 +75,7 @@ def make_fetcher() -> FakeFetcher:
 
 def test_検索の送信値は分類コードと地域名() -> None:
     """分類の name は large_kind ではなく register_sub_id。地域はコードでなく名前。"""
-    assert search_fields("token", CATEGORY, HOKKAIDO) == (
+    assert search_fields("token", CATEGORY, HOKKAIDO.name) == (
         ("_method", "POST"),
         ("_csrfToken", "token"),
         ("screen_id", "index"),
@@ -65,9 +86,11 @@ def test_検索の送信値は分類コードと地域名() -> None:
 
 
 def test_トークン取得から_CSV_出力まで順に叩く(cache_dir: Path) -> None:
+    """全国件数の 1 回ぶんを挟んでから、地域ごとの検索と CSV 出力に進む。"""
     fetcher = make_fetcher()
     fetch_ledgers(fetcher, LedgerCache(cache_dir), [CATEGORY], [HOKKAIDO])
-    assert fetcher.urls() == [INDEX_URL, SEARCH_URL, CSV_URL]
+    assert fetcher.urls() == [INDEX_URL, SEARCH_URL, SEARCH_URL, CSV_URL]
+    assert dict(fetcher.calls[1][2])["seat_pref"] == ""  # 地域で絞らない = 全国
 
 
 def test_CSV_出力には応答の_hidden_値をそのまま送る(cache_dir: Path) -> None:
@@ -130,7 +153,7 @@ def test_0_件のときは_CSV_を要求しない(cache_dir: Path) -> None:
     fetcher = FakeFetcher(
         {
             INDEX_URL: fixture("search_index.html").encode("utf-8"),
-            SEARCH_URL: search_response,
+            SEARCH_URL: search_responder(),
         }
     )
     cache = LedgerCache(cache_dir)
@@ -139,14 +162,47 @@ def test_0_件のときは_CSV_を要求しない(cache_dir: Path) -> None:
     assert cache.entries["102/13-tokyo"].row_count == 0
 
 
+def test_検索応答が読めなければトークンを取り直して再試行する(cache_dir: Path) -> None:
+    """長い巡回の途中でセッションが切れても、そこで全部を落とさない。"""
+    responses = iter(["<html>セッション切れ</html>".encode()])
+
+    def flaky(fields: tuple[tuple[str, str], ...]) -> bytes:
+        return next(responses, None) or search_responder()(fields)
+
+    fetcher = FakeFetcher(
+        {
+            INDEX_URL: fixture("search_index.html").encode("utf-8"),
+            SEARCH_URL: flaky,
+            CSV_URL: make_csv([SAMPLE_ROW] * 85),
+        }
+    )
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(fetcher, cache, [CATEGORY], [HOKKAIDO])
+    # トークンを取り直した = トップページを 2 度取っている
+    assert fetcher.urls().count(INDEX_URL) == 2
+    assert cache.entries["102/01-hokkaido"].row_count == 85
+
+
+def test_読めない応答が続けば諦めて失敗させる(cache_dir: Path) -> None:
+    """取り直しても駄目なものを、0 件として静かに通さない。"""
+    fetcher = FakeFetcher(
+        {
+            INDEX_URL: fixture("search_index.html").encode("utf-8"),
+            SEARCH_URL: "<html>メンテナンス中</html>".encode(),
+        }
+    )
+    with pytest.raises(ParseError):
+        fetch_ledgers(fetcher, LedgerCache(cache_dir), [CATEGORY], [HOKKAIDO])
+
+
 def test_中断しても取得済みをやり直さない(cache_dir: Path) -> None:
     cache = LedgerCache(cache_dir)
     fetch_ledgers(make_fetcher(), cache, [CATEGORY], [HOKKAIDO])
 
     resumed = make_fetcher()
     fetch_ledgers(resumed, cache, [CATEGORY], [HOKKAIDO, TOKYO])
-    # 取り直すのは未取得の東京都だけ。トークンの取り直しは 1 度だけ走る。
-    assert resumed.urls() == [INDEX_URL, SEARCH_URL]
+    # 取り直すのは未取得の東京都だけ。全国件数は毎回数え直す (網羅性の基準のため)。
+    assert resumed.urls() == [INDEX_URL, SEARCH_URL, SEARCH_URL]
     assert resumed.calls[-1][2][-1] == ("seat_pref", "東京都")
 
 
@@ -182,15 +238,36 @@ def test_CSV_でない応答は失敗させる() -> None:
         read_csv_rows(b"\xff\xfe\x00\x00")
 
 
-def test_取得結果を既知の件数と突き合わせる(cache_dir: Path) -> None:
+def test_全国件数と地域合計を突き合わせる(cache_dir: Path) -> None:
+    """どの地域でも引けない指定があると、地域合計が全国件数に届かない。"""
     cache = LedgerCache(cache_dir)
-    fetch_ledgers(make_fetcher(), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+    fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
     summary = summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO])[0]
 
     assert summary.is_complete is True
-    assert (summary.hit_count, summary.row_count) == (34, 85)
-    # 2 地域ぶんしか取っていないので、既知の総数には遠く届かない。
-    assert summary.difference == 34 - CATEGORY.known_designation_count
+    assert (summary.area_hit_count, summary.whole_count, summary.row_count) == (34, 40, 85)
+    assert summary.difference == -6
+
+
+def test_地域をまたぐ重複は正の差になる(cache_dir: Path) -> None:
+    """統合時に (台帳ID, 管理対象ID) で排除する前提なので、取りこぼしとは分けて示す。"""
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(make_fetcher(whole=30), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+    assert summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO])[0].difference == 4
+
+
+def test_全国件数は分類ごとに_1_回だけ数える(cache_dir: Path) -> None:
+    fetcher = make_fetcher()
+    fetch_ledgers(fetcher, LedgerCache(cache_dir), [CATEGORY], [HOKKAIDO, TOKYO])
+    whole_searches = [call for call in fetcher.calls if dict(call[2]).get("seat_pref") == ""]
+    assert len(whole_searches) == 1
+
+
+def test_全国件数を数えていなければ差を出さない(cache_dir: Path) -> None:
+    """取得前に report だけ実行した場合。無いものを 0 とみなして誤報しない。"""
+    summary = summarize(LedgerCache(cache_dir), [CATEGORY], [HOKKAIDO])[0]
+    assert summary.whole_count is None
+    assert summary.difference is None
 
 
 def test_未取得の地域があれば完了扱いにしない(cache_dir: Path) -> None:
@@ -201,9 +278,16 @@ def test_未取得の地域があれば完了扱いにしない(cache_dir: Path)
     assert summary.fetched_areas == 1
 
 
-def test_欠損を報告に出す(cache_dir: Path) -> None:
+def test_取りこぼしを報告に出す(cache_dir: Path) -> None:
     cache = LedgerCache(cache_dir)
-    fetch_ledgers(make_fetcher(), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+    fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
     report = format_summary(summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO]))
-    assert "少ない" in report
-    assert "2,599" in report  # 2,633 - 34
+    assert "どの地域でも引けない 6 件" in report
+
+
+def test_全国件数が実測時から動いていれば知らせる(cache_dir: Path) -> None:
+    """新規指定・解除で動く。差そのものは異常ではないので、注記として出す。"""
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO])
+    report = format_summary(summarize(cache, [CATEGORY], [HOKKAIDO]))
+    assert f"{40 - CATEGORY.known_designation_count:+,} 件変わっている" in report

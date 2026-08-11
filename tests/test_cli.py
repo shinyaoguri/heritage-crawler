@@ -36,4 +36,4 @@ def test_報告は取得せずに出せる(cache_dir: Path, capsys: pytest.Captu
     printed = capsys.readouterr().out
     for code in ("101", "102", "103"):
         assert code in printed
-    assert "未取得 49 地域" in printed
+    assert "未取得 51 地域" in printed

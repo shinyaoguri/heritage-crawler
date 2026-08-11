@@ -50,6 +50,12 @@ def test_別のインスタンスからマニフェストを読み直せる(cach
     assert LedgerCache(cache_dir).entries["102/01-hokkaido"].hit_count == 34
 
 
+def test_全国件数もマニフェストに残す(cache_dir: Path) -> None:
+    """網羅性の基準。再開後の report でも同じ判定ができるよう永続化する。"""
+    LedgerCache(cache_dir).record_whole_count(CATEGORY, 2633)
+    assert LedgerCache(cache_dir).whole_counts == {"102": 2633}
+
+
 def test_取得済みは飛ばす(cache_dir: Path) -> None:
     cache = LedgerCache(cache_dir)
     assert cache.is_done(CATEGORY, HOKKAIDO) is False

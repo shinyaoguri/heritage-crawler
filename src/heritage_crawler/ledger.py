@@ -65,11 +65,12 @@ class LedgerError(RuntimeError):
     """台帳の取得結果が期待した形をしていない。"""
 
 
-def search_fields(csrf_token: str, category: Category, area: Area) -> FormFields:
+def search_fields(csrf_token: str, category: Category, area_name: str) -> FormFields:
     """検索の POST パラメータ。
 
     分類の select の name は ``large_kind`` ではなく ``register_sub_id``。
-    地域はコードではなく名前 (``北海道``) で送る。
+    地域はコードではなく名前 (``北海道``) で送る。空文字なら全国が返る。
+    seat_pref は格納値の完全一致で絞る (``北海道県`` や ``14`` では 0 件になる)。
     """
     return (
         ("_method", "POST"),
@@ -77,7 +78,7 @@ def search_fields(csrf_token: str, category: Category, area: Area) -> FormFields
         ("screen_id", "index"),
         ("page_no", "1"),
         ("register_sub_id", category.code),
-        ("seat_pref", area.name),
+        ("seat_pref", area_name),
     )
 
 
@@ -137,7 +138,7 @@ def fetch_one(
     now: Callable[[], datetime] = _utc_now,
 ) -> tuple[LedgerEntry, bytes]:
     """1 つの (分類 × 地域) を取得する。0 件なら CSV は要求せず空を返す。"""
-    page = _search(fetcher, session, category, area)
+    page = _search(fetcher, session, category, area.name)
 
     if page.csv_fields is None:
         logger.info("%s × %s: 0 件", category.code, area.name)
@@ -166,18 +167,31 @@ def fetch_one(
     return entry, raw
 
 
-def _search(fetcher: Fetcher, session: Session, category: Category, area: Area) -> SearchPage:
+def _search(fetcher: Fetcher, session: Session, category: Category, area_name: str) -> SearchPage:
     """検索して結果ページを読む。トークンが失効していたら 1 度だけ取り直す。"""
-    html = fetcher.post(SEARCH_URL, search_fields(session.token, category, area)).decode("utf-8")
-    try:
-        return parse_search_page(html)
-    except ParseError as error:
-        logger.warning("検索応答を読めなかった (%s)。トークンを取り直して再試行する", error)
-        session.refresh()
-        html = fetcher.post(SEARCH_URL, search_fields(session.token, category, area)).decode(
-            "utf-8"
-        )
-        return parse_search_page(html)
+    for attempt in (1, 2):
+        html = fetcher.post(
+            SEARCH_URL, search_fields(session.token, category, area_name)
+        ).decode("utf-8")
+        try:
+            return parse_search_page(html)
+        except ParseError as error:
+            if attempt == 2:
+                raise
+            logger.warning("検索応答を読めなかった (%s)。トークンを取り直して再試行する", error)
+            session.refresh()
+    raise AssertionError("到達しない")
+
+
+def fetch_whole_count(fetcher: Fetcher, session: Session, category: Category) -> int:
+    """地域で絞らずに検索して、その分類の全国件数を得る。
+
+    地域合計と突き合わせる基準はこれを使う。ソース側の件数が動いても同じ実行の
+    中で取った値どうしを比べるので、固定値のように古びない。
+    """
+    count = _search(fetcher, session, category, "").hit_count
+    logger.info("%s: 全国 %d 件 (指定)", category.code, count)
+    return count
 
 
 def fetch_ledgers(
@@ -189,39 +203,52 @@ def fetch_ledgers(
     force: bool = False,
     now: Callable[[], datetime] = _utc_now,
 ) -> None:
-    """分類 × 地域を順に取得する。取得済みは飛ばす (``force`` で取り直す)。"""
+    """分類 × 地域を順に取得する。取得済みは飛ばす (``force`` で取り直す)。
+
+    分類ごとに全国件数も取り直す。1 分類あたり 1 リクエストで、地域合計との
+    差が取りこぼしと重複の両方を教えてくれる (``summarize``)。
+    """
     session = Session(fetcher)
-    targets = [(category, area) for category in categories for area in areas]
-    for index, (category, area) in enumerate(targets, start=1):
-        if not force and cache.is_done(category, area):
-            logger.debug("取得済みのため飛ばす: %s", entry_key(category, area))
-            continue
-        logger.debug("(%d/%d) %s", index, len(targets), entry_key(category, area))
-        entry, raw = fetch_one(fetcher, session, category, area, now=now)
-        cache.record(category, area, entry, raw)
+    for category in categories:
+        cache.record_whole_count(category, fetch_whole_count(fetcher, session, category))
+        for area in areas:
+            if not force and cache.is_done(category, area):
+                logger.debug("取得済みのため飛ばす: %s", entry_key(category, area))
+                continue
+            entry, raw = fetch_one(fetcher, session, category, area, now=now)
+            cache.record(category, area, entry, raw)
 
 
 @dataclass(frozen=True)
 class CategorySummary:
-    """1 分類ぶんの取得結果。既知の指定件数との突き合わせに使う。"""
+    """1 分類ぶんの取得結果と、その網羅性。"""
 
     category: Category
     fetched_areas: int
     total_areas: int
-    hit_count: int
-    """件数表示の合計 (指定単位)。"""
+    area_hit_count: int
+    """地域ごとの件数表示の合計 (指定単位)。地域をまたぐ指定は二重に数えられる。"""
+
+    whole_count: int | None
+    """地域で絞らずに数えた全国件数 (指定単位)。未取得なら None。"""
 
     row_count: int
-    """CSV 行数の合計 (棟単位)。"""
+    """CSV 行数の合計 (棟単位)。指定単位とは比べない。"""
 
     @property
     def is_complete(self) -> bool:
         return self.fetched_areas == self.total_areas
 
     @property
-    def difference(self) -> int:
-        """既知の指定件数との差。負なら取りこぼし、正なら新規指定などの増加。"""
-        return self.hit_count - self.category.known_designation_count
+    def difference(self) -> int | None:
+        """地域合計 − 全国件数。
+
+        負 = どの地域でも引けない指定がある (取りこぼし)。
+        正 = 複数の地域に現れる指定がある (統合時に (台帳ID, 管理対象ID) で排除する)。
+        """
+        if self.whole_count is None:
+            return None
+        return self.area_hit_count - self.whole_count
 
 
 def summarize(
@@ -241,7 +268,8 @@ def summarize(
                 category=category,
                 fetched_areas=len(entries),
                 total_areas=len(areas),
-                hit_count=sum(entry.hit_count for entry in entries),
+                area_hit_count=sum(entry.hit_count for entry in entries),
+                whole_count=cache.whole_counts.get(category.code),
                 row_count=sum(entry.row_count for entry in entries),
             )
         )
@@ -249,24 +277,28 @@ def summarize(
 
 
 def format_summary(summaries: Sequence[CategorySummary]) -> str:
-    """取得結果を人が読める形にする。欠損があれば行末で知らせる。
-
-    件数表示の合計は指定単位のため既知の総数と比べられる。CSV 行数は棟単位で
-    単位が違うので、比較には使わない。
-    """
-    lines = ["分類  地域      指定 (既知)          棟", "-" * 52]
+    """取得結果を人が読める形にする。網羅できていなければ行末で知らせる。"""
+    lines = ["分類  地域      全国   地域合計        棟", "-" * 60]
+    notes = []
     for summary in summaries:
+        whole = f"{summary.whole_count:,}" if summary.whole_count is not None else "-"
         note = ""
         if not summary.is_complete:
             note = f"  ← 未取得 {summary.total_areas - summary.fetched_areas} 地域"
-        elif summary.difference < 0:
-            note = f"  ← 既知より {-summary.difference:,} 件少ない"
-        elif summary.difference > 0:
-            note = f"  ← 既知より {summary.difference:,} 件多い"
+        elif summary.difference is not None and summary.difference < 0:
+            note = f"  ← どの地域でも引けない {-summary.difference:,} 件"
+        elif summary.difference:
+            note = f"  ← 地域をまたぐ重複 {summary.difference:,} 件"
         lines.append(
             f"{summary.category.code}  "
             f"{summary.fetched_areas:>2}/{summary.total_areas:<2}  "
-            f"{summary.hit_count:>7,} ({summary.category.known_designation_count:>6,})  "
-            f"{summary.row_count:>7,}{note}"
+            f"{whole:>8}  {summary.area_hit_count:>8,}  {summary.row_count:>8,}{note}"
         )
-    return "\n".join(lines)
+        known = summary.category.known_designation_count
+        if summary.whole_count is not None and summary.whole_count != known:
+            notes.append(
+                f"※ {summary.category.code} の全国件数が 2026-08-11 の実測 "
+                f"({known:,}) から {summary.whole_count - known:+,} 件変わっている"
+            )
+    lines.append("(全国・地域合計は指定単位、棟は CSV の行数)")
+    return "\n".join(lines + notes)

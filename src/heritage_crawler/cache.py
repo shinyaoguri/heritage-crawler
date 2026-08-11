@@ -47,6 +47,7 @@ class LedgerCache:
     def __init__(self, root: Path = DEFAULT_CACHE_DIR) -> None:
         self.root = root
         self._entries: dict[str, LedgerEntry] | None = None
+        self._whole_counts: dict[str, int] = {}
 
     @property
     def ledger_dir(self) -> Path:
@@ -75,7 +76,19 @@ class LedgerCache:
                 f"{self.manifest_path} のマニフェスト形式が未対応 (version={version!r})。"
                 "作り直すか変換すること"
             )
+        self._whole_counts = dict(raw.get("whole_counts", {}))
         return {key: LedgerEntry(**value) for key, value in raw.get("entries", {}).items()}
+
+    @property
+    def whole_counts(self) -> dict[str, int]:
+        """分類ごとの全国件数。地域合計と突き合わせて取りこぼしを見つけるための基準。"""
+        if self._entries is None:
+            self._entries = self._load()
+        return self._whole_counts
+
+    def record_whole_count(self, category: Category, hit_count: int) -> None:
+        self.whole_counts[category.code] = hit_count
+        self._save()
 
     def is_done(self, category: Category, area: Area) -> bool:
         """再開時に飛ばしてよいか。
@@ -101,6 +114,7 @@ class LedgerCache:
         self.ledger_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": MANIFEST_VERSION,
+            "whole_counts": dict(sorted(self._whole_counts.items())),
             "entries": {key: asdict(entry) for key, entry in sorted(self.entries.items())},
         }
         _atomic_write(

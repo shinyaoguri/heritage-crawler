@@ -113,7 +113,22 @@ NON_PREFECTURE_AREAS: Final[tuple[Area, ...]] = (
     Area("99", "地域を定めない", "unspecified"),
 )
 
-SEARCH_AREAS: Final[tuple[Area, ...]] = PREFECTURES + NON_PREFECTURE_AREAS
+SELECTABLE_AREAS: Final[tuple[Area, ...]] = PREFECTURES + NON_PREFECTURE_AREAS
+"""検索フォームの select が提供する 49 個。並びも表記もフォームどおり。"""
+
+# データ側の都道府県が未正規化のまま入っている行の受け皿 (2026-08-11 に実測)。
+# seat_pref は格納値の完全一致で絞るため、表示名でない値が入った行はどの option
+# でも引けない。実害があったのは 101 の 3 件で、いずれも複数県にまたがる指定:
+#   98 → わたらせ渓谷鐵道笠松トンネル (栃木・群馬) / 唐沢堰堤 (山梨・長野)
+#   1  → 宮下家住宅主屋 (神奈川県)
+# 元データが直れば 0 件になるだけで害はない。新しい値が現れたら、地域合計と
+# 全国件数の差 (ledger.summarize) が気付かせてくれる。
+IRREGULAR_AREAS: Final[tuple[Area, ...]] = (
+    Area("91", "98", "raw-98"),
+    Area("92", "1", "raw-1"),
+)
+
+SEARCH_AREAS: Final[tuple[Area, ...]] = SELECTABLE_AREAS + IRREGULAR_AREAS
 
 
 def detail_url(daichou_id: str, kanri_taishou_id: str) -> str:
