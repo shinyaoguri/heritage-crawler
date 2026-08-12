@@ -34,6 +34,42 @@ CONSECUTIVE_FAILURE_LIMIT: Final = 10
 相手が落ちているか、こちらが弾かれている。気付かずに 2 万回叩き続けない。
 """
 
+ERROR_PAGE_MARKERS: Final = ("必要な情報が足りません",)
+"""**HTTP 200 で返ってくるエラーページ**の目印 (ADR 0011)。
+
+4 req/s で叩いたときに応答の 15% がこれになった。ステータスは 200 なので、
+本文を見ないと失敗と分からない。見ないままキャッシュすると、取得は成功した
+ことになり、連続失敗の打ち切りも働かない。
+"""
+
+MIN_DETAIL_BYTES: Final = 5_000
+"""詳細ページとして受け取る下限。
+
+実物は 33〜55 KB で、上記のエラーページは 3 KB 弱。目印が変わっても大きさで気付く。
+"""
+
+
+def rejected(html: bytes) -> str:
+    """詳細ページとして受け取ってよいか。駄目なら理由を返す (ADR 0011)。
+
+    **パースはしない。** 取得層が見るのは「相手がエラーページを返していないか」
+    だけで、項目の読み取りは解析層の仕事 (ADR 0006 の分離を保つ)。
+
+    >>> rejected(b"x" * 40_000)
+    ''
+    >>> rejected("必要な情報が足りません".encode())
+    'エラーページが返ってきた (必要な情報が足りません)'
+    >>> rejected(b"<html></html>")
+    '詳細ページとして小さすぎる (13 バイト)'
+    """
+    text = html.decode("utf-8", "replace")
+    for marker in ERROR_PAGE_MARKERS:
+        if marker in text:
+            return f"エラーページが返ってきた ({marker})"
+    if len(html) < MIN_DETAIL_BYTES:
+        return f"詳細ページとして小さすぎる ({len(html):,} バイト)"
+    return ""
+
 
 class DetailError(RuntimeError):
     """詳細ページの巡回を続けられない。"""
@@ -101,6 +137,40 @@ class DetailRun:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def recheck_cache(
+    cache: DetailCache, targets: Sequence[Target], now: Callable[[], datetime] = _utc_now
+) -> list[Target]:
+    """キャッシュ済みの生 HTML を検査し、エラーページだったものを未取得へ戻す。
+
+    200 で返るエラーページに気付く前に取ったぶんは「取得済み」として残っている
+    (ADR 0011 の事故)。取り直すには、まず取得済みの印を外す必要がある。
+    通信はしない。
+    """
+    found = []
+    for target in targets:
+        if not cache.is_done(target.daichou_id, target.kanri_taishou_id):
+            continue
+        try:
+            reason = rejected(cache.read_html(target.daichou_id, target.kanri_taishou_id))
+        except OSError as error:
+            reason = f"キャッシュを読めない: {error}"
+        if not reason:
+            continue
+        cache.record(
+            DetailEntry(
+                daichou_id=target.daichou_id,
+                kanri_taishou_id=target.kanri_taishou_id,
+                ok=False,
+                byte_count=0,
+                fetched_at=now().isoformat(timespec="seconds"),
+                error=reason,
+            )
+        )
+        found.append(target)
+    logger.info("キャッシュを検査した: 取り直しが要るもの %d 件", len(found))
+    return found
 
 
 def fetch_details(
@@ -221,6 +291,11 @@ class _RunState:
             html = fetcher.get(target.url)
         except FetchError as error:
             self._record(target, ok=False, html=None, error=str(error))
+            return
+        # 200 でもエラーページのことがある。掴んだら失敗として扱い、キャッシュに
+        # 残さない (残すと取得済みと見なして二度と取り直せない。ADR 0011)。
+        if reason := rejected(html):
+            self._record(target, ok=False, html=None, error=reason)
         else:
             self._record(target, ok=True, html=html, error="")
 

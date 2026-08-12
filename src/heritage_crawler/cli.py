@@ -5,8 +5,8 @@
 1. ``fetch-ledger`` で分類 × 地域の CSV を取る (153 リクエスト / 約 25 分)
 2. ``fetch-detail`` で台帳の各行から詳細ページを取る (2 万件 / 約 6 時間)
 
-どちらも中断しても取得済みを飛ばして再開する。既定のレート上限は 4 req/s
-(間隔 0.25 秒) で、上限を決めるのは間隔だけ。並列度を上げても超えない (ADR 0010)。
+どちらも中断しても取得済みを飛ばして再開する。既定のレート上限は 1 req/s
+(間隔 1 秒)。相手はこれを超えると 200 でエラーページを返す (ADR 0011)。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from heritage_crawler.detail import (
     fetch_details,
     format_detail_summary,
     read_targets,
+    recheck_cache,
     summarize_details,
 )
 from heritage_crawler.export import DEFAULT_OUTPUT_DIR, build_dataset, format_report
@@ -47,13 +48,14 @@ MAX_CONCURRENCY: Final = 8
 
 レートの上限は間隔が決めるので (ADR 0010)、応答待ちの隙間が埋まったあとは
 これ以上増やしても速くならず、相手側の同時接続だけが増える。
+既定の間隔 1 秒では 1 本で足りる。
 """
 
-DEFAULT_CONCURRENCY: Final = 3
+DEFAULT_CONCURRENCY: Final = 1
 """詳細ページ取得の既定の並列度。
 
-応答 0.625 秒の実測に対し、間隔 0.25 秒のスロットを埋めきる本数
-(``0.625 / 0.25`` の切り上げ)。1 本では応答時間に律速され約 1.6 req/s しか出ない。
+間隔 1 秒・応答 0.625 秒なら 1 本で上限を出しきるので、増やす理由が無い
+(増えるのは相手側の同時接続だけ。ADR 0011)。
 """
 
 logger = logging.getLogger("heritage_crawler")
@@ -84,7 +86,7 @@ def _access_options(parser: argparse.ArgumentParser) -> None:
         "--interval",
         type=_seconds,
         default=DEFAULT_INTERVAL,
-        help=f"リクエスト間隔の秒数 = レート上限 (既定: {DEFAULT_INTERVAL} = 4 req/s)",
+        help=f"リクエスト間隔の秒数 = レート上限 (既定: {DEFAULT_INTERVAL} = 1 req/s)",
     )
     parser.add_argument(
         "--timeout", type=_seconds, default=DEFAULT_TIMEOUT, help="1 リクエストのタイムアウト秒数"
@@ -143,6 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detail.add_argument(
         "--retry-failed", action="store_true", help="失敗として記録されたぶんだけ取り直す"
+    )
+    detail.add_argument(
+        "--recheck-cache",
+        action="store_true",
+        help="取得の前にキャッシュ済みの HTML を検査し、エラーページだったものを取り直す "
+        "(200 で返るエラーページを掴んでいた場合の復旧。ADR 0011)",
     )
 
     report_detail = subparsers.add_parser("report-detail", help="詳細ページの取得状況を報告する")
@@ -258,6 +266,9 @@ def _fetch_detail(args: argparse.Namespace, cache: DetailCache, targets: Sequenc
         return 1
 
     wanted = list(targets)
+    if args.recheck_cache:
+        # 通信しない検査。ここで未取得へ戻したぶんは、そのまま下の取得で拾われる。
+        recheck_cache(cache, wanted)
     if args.retry_failed:
         failed = {
             detail_key(entry.daichou_id, entry.kanri_taishou_id) for entry in cache.failures()

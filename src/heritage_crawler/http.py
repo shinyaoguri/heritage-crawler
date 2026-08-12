@@ -28,8 +28,12 @@ from typing import Final, Protocol
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTACT: Final = "https://github.com/shinyaoguri/heritage-crawler"
-DEFAULT_INTERVAL: Final = 0.25
-"""リクエストの間隔 = レート上限 4 req/s (ADR 0010)。"""
+DEFAULT_INTERVAL: Final = 1.0
+"""リクエストの間隔 = レート上限 1 req/s。
+
+**これ以上詰めない。** 4 req/s で回したら相手が応答の 15% を 200 のエラーページに
+した (ADR 0011)。間隔は前のリクエストの開始から測るので、この値がそのまま上限になる。
+"""
 
 DEFAULT_TIMEOUT: Final = 60.0
 DEFAULT_RETRIES: Final = 3

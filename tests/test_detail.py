@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import FakeFetcher, make_csv, make_row
-from heritage_crawler.cache import DetailCache, LedgerCache, LedgerEntry
+from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
 from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS
 from heritage_crawler.detail import (
     DetailError,
@@ -20,12 +20,17 @@ from heritage_crawler.detail import (
     format_detail_summary,
     format_duration,
     read_targets,
+    recheck_cache,
     summarize_details,
 )
 
 CATEGORY = BUILDING_CATEGORIES[1]  # 102
 
-HTML = "<html><body>琵琶湖疏水施設 第一トンネル</body></html>".encode()
+# 実物の詳細ページは 33〜55 KB。取得層は小さすぎる応答をエラーページとして
+# 弾くので (ADR 0011)、身代わりも実物なみの大きさにする。
+HTML = (
+    "<html><body>琵琶湖疏水施設 第一トンネル" + "あ" * 20_000 + "</body></html>"
+).encode()
 
 
 def csv_row(kanri_taishou_id: str, name: str = "琵琶湖疏水施設", ridge: str = "") -> list[str]:
@@ -147,6 +152,64 @@ def test_失敗を記録して次へ進む(cache_dir: Path) -> None:
     assert (run.fetched, run.failed) == (2, 1)
     assert [entry.kanri_taishou_id for entry in cache.failures()] == ["24"]
     assert fetcher.urls() == [url("23"), url("24"), url("25")]
+
+
+ERROR_PAGE = "<html><body>必要な情報が足りません。</body></html>".encode()
+"""相手が **HTTP 200 で** 返すエラーページ (ADR 0011 の事故で掴んだ実物と同じ文面)。"""
+
+
+def test_200_で返るエラーページは失敗として扱う(cache_dir: Path) -> None:
+    """成功として記録すると取得済みになり、二度と取り直せない (ADR 0011)。"""
+    cache = DetailCache(cache_dir)
+    targets = [Target(CATEGORY.code, "23", ""), Target(CATEGORY.code, "24", "")]
+
+    run = fetch_details([FakeFetcher({url("23"): HTML, url("24"): ERROR_PAGE})], cache, targets)
+
+    assert (run.fetched, run.failed) == (1, 1)
+    assert [entry.kanri_taishou_id for entry in cache.failures()] == ["24"]
+    assert "必要な情報が足りません" in cache.failures()[0].error
+    assert not cache.is_done(CATEGORY.code, "24")  # 取り直せる
+    assert not cache.html_path(CATEGORY.code, "24").exists()  # ゴミを残さない
+
+
+def test_エラーページが続けば打ち切る(cache_dir: Path) -> None:
+    """レートを上げすぎたときに 2 万件ぶん叩き続けないための歯止め (ADR 0011)。"""
+    targets = [Target(CATEGORY.code, str(number), "") for number in range(23, 40)]
+    fetcher = FakeFetcher({target.url: ERROR_PAGE for target in targets})
+
+    with pytest.raises(DetailError, match="続けて失敗した"):
+        fetch_details([fetcher], DetailCache(cache_dir), targets, failure_limit=3)
+
+    assert len(fetcher.urls()) == 3  # 打ち切るまでの 3 件だけ
+
+
+def test_キャッシュのエラーページを検査して取り直す(cache_dir: Path) -> None:
+    """気付く前に取ったぶんはキャッシュに残る。通信せずに印を外せる (ADR 0011)。"""
+    cache = DetailCache(cache_dir)
+    targets = [Target(CATEGORY.code, "23", ""), Target(CATEGORY.code, "24", "")]
+    # エラーページを掴んでいた時代の記録を再現する (当時は ok=True で保存していた)
+    for target, body in ((targets[0], HTML), (targets[1], ERROR_PAGE)):
+        cache.record(
+            DetailEntry(
+                daichou_id=target.daichou_id,
+                kanri_taishou_id=target.kanri_taishou_id,
+                ok=True,
+                byte_count=len(body),
+                fetched_at="2026-08-12T00:00:00+00:00",
+            ),
+            body,
+        )
+
+    found = recheck_cache(DetailCache(cache_dir), targets)
+
+    assert [target.kanri_taishou_id for target in found] == ["24"]
+    after = DetailCache(cache_dir)
+    assert after.is_done(CATEGORY.code, "23")  # 正常なぶんは触らない
+    assert not after.is_done(CATEGORY.code, "24")
+
+    # 印が外れているので、続けて取得すれば拾われる
+    run = fetch_details([FakeFetcher({url("24"): HTML})], after, targets)
+    assert (run.fetched, run.skipped) == (1, 1)
 
 
 def test_失敗ぶんは後から拾い直せる(cache_dir: Path) -> None:
