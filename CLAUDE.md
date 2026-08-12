@@ -109,6 +109,10 @@ ADR 0009)。`code4heritage` org 配下の既存リポジトリを使い、新し
 - **出力先の対応表は `catalog.py` の `BUILDING_DATASETS` が正本** (ADR 0009)。
   `--output-dir` はデータリポジトリを並べた親ディレクトリで、その配下に
   `<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl` を書く
+- 既定の `data` は gitignore 済み。**ローカルではここからデータリポジトリ群
+  (`~/Repos/bunkazai`) へ symlink を張ってある** ので、クローラーの手元から
+  データを辿れて `--output-dir` も要らない。symlink も追跡されないため、
+  データリポジトリは別リポジトリのまま (submodule にはしない)
 
 ## 検証コマンド
 
