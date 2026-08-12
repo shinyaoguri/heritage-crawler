@@ -8,12 +8,15 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
-from conftest import area_named, fixture, lines, put_detail, put_ledger
+from conftest import FETCHED_AT, area_named, fixture, lines, put_detail, put_ledger
 from heritage_crawler.cache import DetailCache, LedgerCache
-from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED
-from heritage_crawler.export import build_dataset, format_report
+from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED, datasets_for
+from heritage_crawler.export import Reuse, build_dataset, format_report
+from heritage_crawler.update import read_existing
 
 SAMPLES = {
     REGISTERED: ("00004339", "detail_101.html", "東京都"),
@@ -222,6 +225,120 @@ def test_台帳が空なら何も書かない(cache_dir: Path, tmp_path: Path) -
 
     assert (report.total, report.built, report.files) == (0, 0, [])
     assert not (tmp_path / "repos").exists()
+
+
+class Test前回の出力を使い回す:
+    """差分更新 (ADR 0018)。詳細を取り直していない行は前回の出力をそのまま使う。"""
+
+    def snapshot(self, out: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(out).as_posix(): path.read_bytes()
+            for path in sorted(out.rglob("*"))
+            if path.is_file()
+        }
+
+    def test_取り直していない行が埋まり出力は1バイトも変わらない(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """生成物が決定的でないと、データが変わらない月にも差分が立つ (ADR 0014)。"""
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        before = self.snapshot(out)
+        existing = read_existing(out, datasets_for(list(SAMPLES)))
+
+        # 詳細を 1 枚も持たないキャッシュ = 今月は 1 件も取り直さなかった状態
+        report = build_dataset(
+            ledger,
+            DetailCache(tmp_path / "empty"),
+            list(SAMPLES),
+            output_dir=out,
+            reuse=Reuse(
+                records=existing.records, labels=existing.labels, accessed_at=FETCHED_AT
+            ),
+        )
+
+        assert (report.built, report.reused, report.missing_html) == (3, 3, 0)
+        assert self.snapshot(out) == before
+        assert "うち前回の出力をそのまま使った: 3 件" in format_report(report)
+
+    def test_キャッシュにあれば取り直したぶんが勝つ(self, cache_dir: Path, tmp_path: Path) -> None:
+        """取り直したのに前回の値が残ったら、差分更新の意味が無い。"""
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, DESIGNATED, area_named("奈良県"), ["2594"])
+        put_detail(detail, DESIGNATED, "2594", fixture("detail_102.html"))
+        out = tmp_path / "repos"
+        stale = {"ledger_id": "102", "managed_id": "2594", "name": "古い名前"}
+
+        build_dataset(
+            ledger,
+            detail,
+            [DESIGNATED],
+            output_dir=out,
+            reuse=Reuse(records={"102/2594": stale}),
+        )
+
+        written = lines(out / "national-treasures/data/29_nara.jsonl")
+        assert written[0]["name"] == "石上神宮拝殿"
+
+    def test_台帳に出なかった行も残せる(self, cache_dir: Path, tmp_path: Path) -> None:
+        """網羅性を確かめられない分類では、消えた指定を落とさずに残す (ADR 0018)。"""
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, SELECTED, area_named("京都府"), ["16"])
+        put_detail(detail, SELECTED, "16", fixture("detail_103.html"))
+        gone: dict[str, Any] = {
+            "ledger_id": "103",
+            "managed_id": "9999",
+            "name": "台帳から消えた地区",
+            "prefecture": "京都府",
+            "address": "京都市",
+        }
+
+        report = build_dataset(
+            ledger,
+            detail,
+            [SELECTED],
+            output_dir=tmp_path / "repos",
+            reuse=Reuse(retained=[gone]),
+        )
+
+        written = lines(tmp_path / f"repos/{PRESERVATION_DISTRICTS}/data/26_kyoto.jsonl")
+        assert [record["managed_id"] for record in written] == ["16", "9999"]
+        assert report.retained == 1
+        assert "台帳に出なかったが残した: 1 件" in format_report(report)
+
+    def test_利用日は実行日になり表示名は前回から引き継ぐ(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """差分更新では既存の行の取得日を知る術がない (ADR 0018)。
+
+        表示名も同じ理由で前回のぶんを土台にする — 毎月 1/12 しか組み立てないので、
+        今月ぶんだけで作ると ``meta.json`` が月ごとに揺れる。
+        """
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        existing = read_existing(out, datasets_for(list(SAMPLES)))
+
+        build_dataset(
+            ledger,
+            DetailCache(tmp_path / "empty"),
+            list(SAMPLES),
+            output_dir=out,
+            reuse=Reuse(
+                records=existing.records,
+                labels=existing.labels,
+                # UTC の 15 時は日本時間の翌日。利用日は日本時間で切る (ADR 0014)
+                accessed_at="2026-09-30T15:00:00+00:00",
+            ),
+        )
+
+        meta = json.loads(
+            (out / "national-treasures/meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["source"]["accessed_date"] == "2026-10-01"
+        assert "2026年10月1日に利用" in meta["source"]["attribution"]
+        assert meta["labels"]["name"] == "名称"
 
 
 def test_報告に件数と異常が出る(cache_dir: Path, tmp_path: Path) -> None:

@@ -305,6 +305,60 @@ def test_件数表示では相殺して消える取りこぼしをキーの異�
     assert summary.missing_count == 1
 
 
+class Test網羅性の判定:
+    """``looks_complete`` は差分更新で「消えた指定を落としてよいか」を決める (ADR 0018)。
+
+    行を消す判断に使うので、**迷ったら偽**にする。
+    """
+
+    def test_全部取れていれば真(self, cache_dir: Path) -> None:
+        cache = LedgerCache(cache_dir)
+        put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1", "2"])
+        put_ledger(cache, UNEXPANDED, TOKYO, ["3"])
+        cache.record_whole_count(UNEXPANDED, 3)
+
+        assert summarize(cache, [UNEXPANDED], [HOKKAIDO, TOKYO])[0].looks_complete is True
+
+    def test_地域をまたぐ重複は取りこぼしではない(self, cache_dir: Path) -> None:
+        """102 の琵琶湖疏水施設のような正の差。**これで消せなくなるのは行き過ぎ**。"""
+        cache = LedgerCache(cache_dir)
+        fetch_ledgers(make_fetcher(whole=30), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+        summary = summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO])[0]
+
+        assert summary.difference == 4
+        assert summary.note == "地域をまたぐ重複 4 件"
+        assert summary.looks_complete is True
+
+    @pytest.mark.parametrize(
+        ("whole", "reason"),
+        [(5, "どの地域でも引けない"), (2, "全国件数より")],
+        ids=["取りこぼし", "数え方が怪しい"],
+    )
+    def test_全国件数と食い違えば偽(self, cache_dir: Path, whole: int, reason: str) -> None:
+        cache = LedgerCache(cache_dir)
+        put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1", "2", "3"])
+        cache.record_whole_count(UNEXPANDED, whole)
+
+        summary = summarize(cache, [UNEXPANDED], [HOKKAIDO])[0]
+
+        assert reason in summary.note
+        assert summary.looks_complete is False
+
+    def test_未取得の地域があれば偽(self, cache_dir: Path) -> None:
+        cache = LedgerCache(cache_dir)
+        put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1"])
+        cache.record_whole_count(UNEXPANDED, 1)
+
+        assert summarize(cache, [UNEXPANDED], [HOKKAIDO, TOKYO])[0].looks_complete is False
+
+    def test_全国件数を数えていなければ偽(self, cache_dir: Path) -> None:
+        """突き合わせる基準が無い状態。取れているとは言えない。"""
+        cache = LedgerCache(cache_dir)
+        put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1"])
+
+        assert summarize(cache, [UNEXPANDED], [HOKKAIDO])[0].looks_complete is False
+
+
 def test_全国件数より多ければ数え方を疑うよう促す(cache_dir: Path) -> None:
     """取りこぼしと逆向きの差。件数表示が指定単位でない可能性を示す。"""
     cache = LedgerCache(cache_dir)

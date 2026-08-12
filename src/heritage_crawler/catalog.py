@@ -45,6 +45,15 @@ MONUMENTS: Final = Category("401", "史跡名勝天然記念物", 3281)
 
 TARGET_CATEGORIES: Final[tuple[Category, ...]] = (REGISTERED, DESIGNATED, SELECTED, MONUMENTS)
 
+CATEGORIES_BY_CODE: Final[dict[str, Category]] = {
+    category.code: category for category in TARGET_CATEGORIES
+}
+"""分類コードから分類を引く。
+
+**台帳ID は分類コードと同じ値**なので、出力レコードの ``ledger_id`` から分類を
+戻せる。差分更新で、台帳から消えた行がどの分類のものかを知るのに使う (ADR 0018)。
+"""
+
 
 @dataclass(frozen=True)
 class Dataset:

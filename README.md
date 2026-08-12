@@ -19,8 +19,8 @@
 | 101 | 登録有形文化財（建造物） | 登録 | 14,748 | 14,748 |
 | 102 | 国宝・重要文化財（建造物） | 指定 | 2,633 | 5,587 |
 | 103 | 重要伝統的建造物群保存地区 | 選定 | 126 | 126 |
-| 401 | 史跡名勝天然記念物 | 指定 | 3,281 | 3,280 |
-| **計** | | | **20,788** | **23,741** |
+| 401 | 史跡名勝天然記念物 | 指定 | 3,281 | 3,281 |
+| **計** | | | **20,788** | **23,742** |
 
 - **指定件数と取得対象は単位が違う。** 検索結果の件数表示は指定単位、CSV の行数と
   出力レコードは棟単位。棟に展開されるのは 102 だけで (1 指定あたり約 2.5 棟)、
@@ -82,6 +82,9 @@
 
 初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の月次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
+差分は台帳の突き合わせと 1/12 の巡回で見つける
+([ADR 0018](docs/decisions/0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md)。
+`update-records`)。
 
 ## 使い方
 
@@ -89,9 +92,11 @@
 pip install -e .
 heritage-crawler fetch-ledger     # 1 段目: 分類 × 地域の CSV をキャッシュへ
 heritage-crawler report-ledger    # 取得状況と網羅性を確かめる
+heritage-crawler audit-listing    # 検索結果一覧と突き合わせて取りこぼしを名指しする
 heritage-crawler fetch-detail     # 2 段目: 台帳の各行から詳細ページをキャッシュへ
 heritage-crawler report-detail    # 詳細ページの取得状況を確かめる
 heritage-crawler build-records    # キャッシュから JSON Lines を組み立てる
+heritage-crawler update-records   # 月次: 前回の出力と突き合わせて差分だけ取り直す
 ```
 
 取得はいずれも `cache/` 配下へ生の取得物のまま置き、**中断しても同じコマンドで
@@ -116,7 +121,7 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 ### 2 段目 — `fetch-detail`
 
 台帳の各行の `(台帳ID, 管理対象ID)` から詳細ページの URL を組み立てて巡回し、
-生 HTML を gzip でキャッシュへ落とす (23,741 件 / 1 req/s で約 6.6 時間)。
+生 HTML を gzip でキャッシュへ落とす (23,742 件 / 1 req/s で約 6.6 時間)。
 解析はしない — パース仕様を変えるたびに 2 万ページを取り直さずに済むよう、
 取得と解析を分けてある ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
 
@@ -181,6 +186,40 @@ JSON Lines を見ただけでは分からないものを機械可読で持つ。
 
 利用日は規約が求める表示の一部で、散文に手で書くと更新のたびに嘘になる。
 `meta.json` を正本にして、データを読む側が分類ごとの差異を知らずに済むようにする。
+
+### 月次 — `update-records`
+
+**前回の状態はデータリポジトリの JSON Lines そのもの**として扱い、台帳と
+突き合わせて差分だけを取り直す
+([ADR 0018](docs/decisions/0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md))。
+キャッシュも生 HTML も月次実行へ持ち回らない。
+
+```bash
+heritage-crawler fetch-ledger                  # 台帳は毎月まるごと取り直す
+heritage-crawler audit-listing                 # 網羅性を確かめる
+heritage-crawler update-records --dry-run      # 何を取り直すかを見る
+heritage-crawler update-records                # 取り直して書き直す
+```
+
+取り直すのは 3 種類だけ。
+
+1. 台帳に現れた新しいキー (新規指定)
+2. 台帳の値が前回の出力と食い違うキー — 名称・所在地・所有者名・時代・種別・
+   緯度経度で比べる (**手元の 23,742 件で一致率を実測して選んだ列**)
+3. **巡回のぶん — 全体の 1/12。** `(台帳ID, 管理対象ID)` のハッシュを 12 で
+   割った余りが実行月に一致するものを取る。ソース側に更新日が無く、詳細ページ
+   だけの項目 (解説文・員数など) の変更は取り直して比べるしか捕まえられないため
+
+台帳から消えたキーは指定解除として落とすが、**その分類の網羅性が確かめられて
+いるときに限る** — 取得の失敗や相手側の一時的な障害を指定解除と誤認して行を
+消さないため。確かめられない分類の行は残したうえで報告に出す。
+
+- `--dry-run` — 計画だけを出す (相手先へも出ず、出力も書き換えない)
+- `--month` — 巡回の枠に使う月 (既定は実行月)
+- 利用日は**実行日** (日本時間)。既存の行がいつ取得されたかは出力から分からず、
+  台帳は毎月まるごと取り直しているため
+- 取り直していない行は前回の出力をそのまま使う。**生成物は決定的**なので、
+  データが変わらない月は 1 バイトも差分が出ない
 
 ## データの出典と利用条件
 

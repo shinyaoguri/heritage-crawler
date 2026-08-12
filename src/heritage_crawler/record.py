@@ -331,6 +331,10 @@ class BuildReport:
     total: int = 0
     built: int = 0
     missing_html: int = 0
+    reused: int = 0
+    """詳細を取り直さず、前回の出力をそのまま使ったもの (差分更新。ADR 0018)。"""
+    retained: int = 0
+    """台帳に現れなかったが、消さずに残したもの (網羅性が確かめられない分類)。"""
     parse_failures: list[str] = field(default_factory=list)
     unknown_labels: Counter[str] = field(default_factory=Counter)
     invalid_dates: Counter[str] = field(default_factory=Counter)
@@ -439,7 +443,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
     page_name = " ".join(
         part for part in (values.get("name", ""), values.get("ridge_name", "")) if part
     )
-    if csv_name and page_name and _squeezed(csv_name) != _squeezed(page_name):
+    if csv_name and page_name and squeezed(csv_name) != squeezed(page_name):
         # 結合キーの取り違えは、まず名称のずれとして現れる。
         report.name_mismatches.append(f"{row.key} CSV={csv_name} / 詳細={page_name}")
 
@@ -489,16 +493,16 @@ def routing_kinds(category: Category, record: dict[str, Any]) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
 
 
-def _squeezed(name: str) -> str:
-    """空白を落とした形。名称を比べるときだけ使う。
+def squeezed(name: str) -> str:
+    """空白を落とした形。台帳と詳細ページの値を比べるときに使う。
 
     CSV は全角スペース、詳細ページは半角スペースで同じ名称を書くことがある
     (実データ 20,461 件のうち 137 件)。そのまま比べると報告が空白の違いで埋まり、
     **本当の食い違い (結合キーの取り違え) が見えなくなる**。
 
-    >>> _squeezed("高照神社　津軽信政公墓 （２）") == _squeezed("高照神社 津軽信政公墓 （２）")
+    >>> squeezed("高照神社　津軽信政公墓 （２）") == squeezed("高照神社 津軽信政公墓 （２）")
     True
-    >>> _squeezed("秋篠寺本堂") == _squeezed("秋篠寺講堂")
+    >>> squeezed("秋篠寺本堂") == squeezed("秋篠寺講堂")
     False
     """
     return re.sub(r"\s+", "", name)

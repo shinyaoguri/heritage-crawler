@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from conftest import area_named, fixture, put_detail, put_ledger
+from heritage_crawler.cache import DetailCache, LedgerCache
+from heritage_crawler.catalog import SELECTED
 from heritage_crawler.cli import build_parser, main
 
 
@@ -97,3 +100,66 @@ def test_台帳が無ければ組み立ては失敗させる(cache_dir: Path, tm
 
     assert status == 1
     assert not (tmp_path / "data").exists()
+
+
+def test_差分更新の巡回は既定で実行月(cache_dir: Path) -> None:
+    """月をまたいで走らせても、その月の 1/12 を取る (ADR 0018)。"""
+    assert build_parser().parse_args(["update-records"]).month is None
+
+
+@pytest.mark.parametrize("value", ["0", "13"])
+def test_ありえない月は受け付けない(value: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["update-records", "--month", value])
+
+
+def test_台帳が無いまま差分更新を始めない(cache_dir: Path, tmp_path: Path) -> None:
+    """突き合わせる相手が無い状態で通信を始めない。"""
+    status = main(
+        ["--cache-dir", str(cache_dir), "update-records", "--output-dir", str(tmp_path / "data")]
+    )
+
+    assert status == 1
+
+
+def test_前回の出力が無ければ差分更新はしない(
+    cache_dir: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """差分の基準が無い。全件は build-records の仕事 (ADR 0018 の分担)。"""
+    put_ledger(LedgerCache(cache_dir), SELECTED, area_named("京都府"), ["16"])
+
+    status = main(
+        ["--cache-dir", str(cache_dir), "update-records", "--output-dir", str(tmp_path / "data")]
+    )
+
+    assert status == 1
+    assert "build-records" in caplog.text
+
+
+def test_差分更新のドライランは何も書き換えない(
+    cache_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """計画を見るだけ。**相手先へも出ない** (取得はここでは走らない)。"""
+    put_ledger(LedgerCache(cache_dir), SELECTED, area_named("京都府"), ["16"])
+    put_detail(DetailCache(cache_dir), SELECTED, "16", fixture("detail_103.html"))
+    out = tmp_path / "data"
+    assert main(["--cache-dir", str(cache_dir), "build-records", "--output-dir", str(out)]) == 0
+    before = {path: path.read_bytes() for path in sorted(out.rglob("*")) if path.is_file()}
+
+    status = main(
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "update-records",
+            "--output-dir",
+            str(out),
+            "--month",
+            "1",
+            "--dry-run",
+        ]
+    )
+
+    assert status == 0
+    assert {path: path.read_bytes() for path in sorted(out.rglob("*")) if path.is_file()} == before
+    printed = capsys.readouterr().out
+    assert "前回の出力 1 件 / 巡回の枠 1/12" in printed

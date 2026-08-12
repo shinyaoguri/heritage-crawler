@@ -6,6 +6,9 @@
 出力先は ``<出力ディレクトリ>/<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl``
 (ADR 0009)。``--output-dir`` はデータリポジトリを並べた親ディレクトリを指す。
 行は ``(台帳ID, 管理対象ID)`` で安定ソートし、取得順に依存させない。
+
+差分更新 (ADR 0018) では ``Reuse`` を渡す。詳細を取り直していない行は前回の
+出力をそのまま使い、書き出しの仕組みは全件のときと同じものを通る。
 """
 
 from __future__ import annotations
@@ -13,12 +16,14 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write, detail_key
 from heritage_crawler.catalog import (
+    CATEGORIES_BY_CODE,
     KIND_SPLIT_CATEGORIES,
     SEARCH_AREAS,
     TARGET_DATASETS,
@@ -29,19 +34,60 @@ from heritage_crawler.catalog import (
     datasets_of,
 )
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
-from heritage_crawler.ledger import read_ledger_rows
+from heritage_crawler.ledger import LedgerRow, read_ledger_rows
 from heritage_crawler.metadata import (
     build_metadata,
     generator_version,
     metadata_path,
     write_metadata,
 )
-from heritage_crawler.record import BuildReport, build_record, routing_kinds
+from heritage_crawler.record import (
+    KEY_ORDER,
+    BuildReport,
+    Built,
+    build_record,
+    resolve_location,
+    routing_kinds,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR: Final = Path("data")
 PROGRESS_EVERY: Final = 1000
+
+
+@dataclass(frozen=True)
+class Reuse:
+    """差分更新で使い回す前回の状態 (ADR 0018)。
+
+    差分の意味づけ (何を新規と見なし、何を巡回で取り直すか) は ``update`` が
+    持つ。こちらが知っているのは「取り直していない行は前回の出力をそのまま
+    使う」ことだけで、書き出しの仕組みは全件のときと変わらない。
+    """
+
+    records: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    """``(台帳ID, 管理対象ID)`` → 前回のレコード。**キャッシュが優先**され、
+    ここが使われるのは詳細を取り直していない行 (と、取得に失敗した行)。"""
+
+    retained: Sequence[Mapping[str, Any]] = ()
+    """台帳に現れなかったが、消さずに残す行。
+
+    網羅性が確かめられない分類で、取得の失敗を指定解除と誤認しないための逃げ道。
+    """
+
+    labels: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    """リポジトリ名 → 前回の ``meta.json`` の表示名。
+
+    差分更新では毎月 2,000 件しか組み立てないので、実測できる表示名もその範囲に
+    しか現れない。前回のぶんを土台にしないと ``meta.json`` が月ごとに揺れる。
+    """
+
+    accessed_at: str = ""
+    """利用日にする日時 (ISO 8601)。
+
+    差分更新では**実行日**が正しい (ADR 0018)。既存の行がいつ取得されたかは
+    出力から分からず、台帳は毎月まるごと取り直しているため。
+    """
 
 
 def build_dataset(
@@ -50,17 +96,24 @@ def build_dataset(
     categories: Sequence[Category],
     areas: Sequence[Area] = SEARCH_AREAS,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
+    reuse: Reuse | None = None,
 ) -> BuildReport:
     """キャッシュ済みの台帳と詳細から JSON Lines を組み立てて書き出す。
 
     詳細ページが未取得の行は数えて飛ばす。1 件のパース失敗でも止めない
     (2 万件のうち 1 件で全体が止まると、直すまで何も出力できない)。
+
+    ``reuse`` を渡すと、キャッシュから組み立てられない行を前回の出力で埋める
+    (差分更新。ADR 0018)。
     """
     report = BuildReport()
     groups: dict[tuple[Dataset, Area], list[dict[str, Any]]] = defaultdict(list)
     labels: dict[Dataset, dict[str, str]] = defaultdict(dict)
     latest_fetch: dict[Dataset, str] = defaultdict(str)
     seen: set[str] = set()
+    if reuse is not None:
+        for dataset in datasets_for(categories):
+            labels[dataset].update(reuse.labels.get(dataset.repo, {}))
 
     for row in read_ledger_rows(ledger_cache, categories, areas):
         # 同じ棟が複数の地域の CSV に出る (ADR 0008 の結合キー)。先に見た方を採る。
@@ -69,12 +122,10 @@ def build_dataset(
         seen.add(row.key)
         report.total += 1
 
-        ledger_id, managed_id = row.get("台帳ID"), row.get("管理対象ID")
-        page = _read_page(detail_cache, ledger_id, managed_id, report)
-        if page is None:
+        built = _built(row, detail_cache, reuse, report)
+        if built is None:
             continue
-        built = build_record(row, page, report)
-        fetched_at = _fetched_at(detail_cache, ledger_id, managed_id)
+        fetched_at = _fetched_at(detail_cache, row.get("台帳ID"), row.get("管理対象ID"))
         for dataset in _datasets_of(row.category, built.record, report):
             groups[(dataset, built.location.area)].append(built.record)
             labels[dataset].update(built.labels)
@@ -82,6 +133,14 @@ def build_dataset(
         report.built += 1
         if report.built % PROGRESS_EVERY == 0:
             logger.info("%d 件組み立てた", report.built)
+
+    for record in reuse.retained if reuse else ():
+        # 台帳に出なかった行。分類は台帳ID から戻せる (分類コードと同じ値)。
+        category = CATEGORIES_BY_CODE[str(record["ledger_id"])]
+        built = _reused(record)
+        for dataset in _datasets_of(category, built.record, report):
+            groups[(dataset, built.location.area)].append(built.record)
+        report.retained += 1
 
     written: dict[Dataset, list[tuple[Area, list[dict[str, Any]]]]] = defaultdict(list)
     for (dataset, area), records in sorted(groups.items(), key=lambda item: _group_order(item[0])):
@@ -96,7 +155,10 @@ def build_dataset(
     version = generator_version()
     for dataset, entries in written.items():
         path = metadata_path(output_dir, dataset)
-        payload = build_metadata(dataset, entries, labels[dataset], latest_fetch[dataset], version)
+        # 差分更新の利用日は実行日 (ADR 0018)。既存の行の取得日時は出力から
+        # 分からず、そのぶんだけ古い日付を載せると出典表記が実態とずれる。
+        fetched_at = reuse.accessed_at if reuse else latest_fetch[dataset]
+        payload = build_metadata(dataset, entries, labels[dataset], fetched_at, version)
         write_metadata(path, payload)
         report.files.append(f"{path} (利用日 {payload['source']['accessed_date']})")
 
@@ -132,6 +194,42 @@ def _datasets_of(
     return datasets
 
 
+def _built(
+    row: LedgerRow, detail_cache: DetailCache, reuse: Reuse | None, report: BuildReport
+) -> Built | None:
+    """台帳の 1 行をレコードにする。**キャッシュが先、前回の出力は控え**。
+
+    差分更新では大半の行の詳細ページを取り直さないので、キャッシュに無いぶんは
+    前回の出力で埋まる。取得に失敗した 1 件も前回の行が残るだけで済み、
+    **失敗が行の消失にならない** (ADR 0018)。
+    """
+    ledger_id, managed_id = row.get("台帳ID"), row.get("管理対象ID")
+    fetched = detail_cache.is_done(ledger_id, managed_id)
+    if fetched and (page := _read_page(detail_cache, ledger_id, managed_id, report)) is not None:
+        return build_record(row, page, report)
+    if reuse is not None and (record := reuse.records.get(row.key)) is not None:
+        report.reused += 1
+        return _reused(record)
+    if not fetched:
+        report.missing_html += 1
+    return None
+
+
+def _reused(record: Mapping[str, Any]) -> Built:
+    """前回の出力の 1 行を、書き出せる形に戻す。
+
+    置き場 (どのファイルへ書くか) は組み立て直しと同じ規則で決める — 前回の
+    ファイル名からではなく値から決めるので、都道府県の判定を直せば次の実行で
+    正しい場所へ移る。表示名は前回の ``meta.json`` から来るのでここでは持たない。
+    """
+    values = dict(record)
+    location = resolve_location(str(values.get("prefecture", "")), str(values.get("address", "")))
+    # 並びは書き出したときのままのはずだが、スキーマの並びを正本として通す。
+    ordered = {key: values.pop(key) for key in KEY_ORDER if key in values}
+    ordered.update(sorted(values.items()))  # KEY_ORDER に無いキーは落とさず末尾へ
+    return Built(record=ordered, location=location)
+
+
 def _fetched_at(cache: DetailCache, ledger_id: str, managed_id: str) -> str:
     """この 1 件を取得した日時 (ISO 8601 の UTC)。記録が無ければ空。
 
@@ -145,9 +243,7 @@ def _fetched_at(cache: DetailCache, ledger_id: str, managed_id: str) -> str:
 def _read_page(
     cache: DetailCache, ledger_id: str, managed_id: str, report: BuildReport
 ) -> DetailPage | None:
-    if not cache.is_done(ledger_id, managed_id):
-        report.missing_html += 1
-        return None
+    """キャッシュ済みの生 HTML を読む。読めなければ報告に積んで None (呼び手が続ける)。"""
     try:
         html = cache.read_html(ledger_id, managed_id).decode("utf-8")
         return parse_detail_page(html)
@@ -188,6 +284,10 @@ def format_report(report: BuildReport) -> str:
         f"対象 {report.total:,} 件 / 出力 {report.built:,} 件 / "
         f"詳細が未取得 {report.missing_html:,} 件",
     ]
+    if report.reused:
+        lines.append(f"うち前回の出力をそのまま使った: {report.reused:,} 件")
+    if report.retained:
+        lines.append(f"台帳に出なかったが残した: {report.retained:,} 件")
     lines.extend(f"  書き出し: {entry}" for entry in report.files)
     if report.missing_html:
         lines.append("未取得ぶんは fetch-detail で取れる")

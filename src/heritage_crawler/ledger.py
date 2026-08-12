@@ -345,6 +345,48 @@ class CategorySummary:
             return None
         return self.whole_count - self.unique_key_count
 
+    @property
+    def note(self) -> str:
+        """行末に出す気付き。気になるところが無ければ空。
+
+        **取りこぼしとは限らない** — 地域をまたぐ重複も報せる。取りこぼしの
+        兆候だけを見たいときは ``looks_complete`` を使う。
+        """
+        if not self.is_complete:
+            return f"未取得 {self.total_areas - self.fetched_areas} 地域"
+        if (missing := self.missing_count) is not None:
+            # 中身の異なり数と比べているので、重複があっても取りこぼしが隠れない。
+            if missing > 0:
+                return f"どの地域でも引けない {missing:,} 件"
+            if missing < 0:
+                return f"全国件数より {-missing:,} 件多い (件数表示の数え方を疑う)"
+        elif self.difference is not None:
+            # 棟に展開される分類は異なり数 (棟) と全国件数 (指定) の単位が違う。
+            # 件数表示どうしの差しか見られず、重複と取りこぼしは相殺しうる (Issue #28)。
+            if self.difference < 0:
+                return f"どの地域でも引けない {-self.difference:,} 件"
+            if self.difference:
+                return f"地域をまたぐ重複 {self.difference:,} 件"
+        return ""
+
+    @property
+    def looks_complete(self) -> bool:
+        """取りこぼしの兆候が無いか。
+
+        **偽のときに消してはいけない** — 台帳から消えた指定を「指定解除」と
+        断じてよいのは、その分類が丸ごと取れていると言えるときだけ (ADR 0018)。
+
+        判定の根拠は分類で違う (棟に展開される 102 だけは件数表示どうしの差しか
+        見られない)。**地域をまたぐ重複は取りこぼしではない**ので、正の差は
+        通す。全国件数が無ければ突き合わせられないので偽にする。
+        """
+        if not self.is_complete or self.whole_count is None:
+            return False
+        if (missing := self.missing_count) is not None:
+            # 負 = 全国件数より手元が多い。数え方を疑う状態なので通さない。
+            return missing == 0
+        return self.difference is not None and self.difference >= 0
+
 
 def summarize(
     cache: LedgerCache,
@@ -378,33 +420,13 @@ def summarize(
     return summaries
 
 
-def _note(summary: CategorySummary) -> str:
-    """行末に出す気付き。網羅できていれば空。"""
-    if not summary.is_complete:
-        return f"未取得 {summary.total_areas - summary.fetched_areas} 地域"
-    if (missing := summary.missing_count) is not None:
-        # 中身の異なり数と比べているので、重複があっても取りこぼしが隠れない。
-        if missing > 0:
-            return f"どの地域でも引けない {missing:,} 件"
-        if missing < 0:
-            return f"全国件数より {-missing:,} 件多い (件数表示の数え方を疑う)"
-    elif summary.difference is not None:
-        # 棟に展開される分類は異なり数 (棟) と全国件数 (指定) の単位が違う。
-        # 件数表示どうしの差しか見られず、重複と取りこぼしは相殺しうる (Issue #28)。
-        if summary.difference < 0:
-            return f"どの地域でも引けない {-summary.difference:,} 件"
-        if summary.difference:
-            return f"地域をまたぐ重複 {summary.difference:,} 件"
-    return ""
-
-
 def format_summary(summaries: Sequence[CategorySummary]) -> str:
     """取得結果を人が読める形にする。網羅できていなければ行末で知らせる。"""
     lines = ["分類  地域      全国   地域合計        棟      異なり", "-" * 72]
     notes = []
     for summary in summaries:
         whole = f"{summary.whole_count:,}" if summary.whole_count is not None else "-"
-        note = _note(summary)
+        note = summary.note
         lines.append(
             f"{summary.category.code}  "
             f"{summary.fetched_areas:>2}/{summary.total_areas:<2}  "
