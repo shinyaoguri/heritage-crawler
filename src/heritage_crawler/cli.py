@@ -22,6 +22,9 @@ from typing import Final
 
 from heritage_crawler.cache import DEFAULT_CACHE_DIR, DetailCache, LedgerCache, detail_key
 from heritage_crawler.catalog import (
+    IRREGULAR_AREAS,
+    NON_PREFECTURE_AREAS,
+    PREFECTURES,
     SEARCH_AREAS,
     TARGET_CATEGORIES,
     Area,
@@ -95,21 +98,31 @@ logger = logging.getLogger("heritage_crawler")
 
 
 def _target_options(parser: argparse.ArgumentParser) -> None:
-    """どの分類・地域を相手にするか。詳細ページの対象も台帳経由でこれで絞る。"""
+    """どの分類・地域を相手にするか。詳細ページの対象も台帳経由でこれで絞る。
+
+    **既定の説明は語彙から組み立てる。** 直書きした値は語彙が増えた月に嘘になり、
+    401 を加えたとき (#27) に「既定: 101 102 103」が実際に取り残された (#38)。
+    """
     parser.add_argument(
         "--category",
         action="append",
         dest="categories",
         choices=[category.code for category in TARGET_CATEGORIES],
-        help="対象の分類コード (既定: 101 102 103)",
+        help=f"対象の分類コード (既定: {' '.join(c.code for c in TARGET_CATEGORIES)})",
     )
     parser.add_argument(
         "--area",
         action="append",
         dest="areas",
         choices=[area.name for area in SEARCH_AREAS],
+        # 51 個を並べると usage が読めなくなる。分類と違って選択肢は伏せる
         metavar="地域名",
-        help="対象の地域名 (既定: 47 都道府県 + ２県以上 + 地域を定めない)",
+        help=(
+            f"対象の地域名 (既定: 全 {len(SEARCH_AREAS)} 地域 = "
+            f"{len(PREFECTURES)} 都道府県 + "
+            f"{'・'.join(area.name for area in NON_PREFECTURE_AREAS)} + "
+            f"未正規化の {len(IRREGULAR_AREAS)} 件)"
+        ),
     )
 
 
