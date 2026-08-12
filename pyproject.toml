@@ -39,7 +39,12 @@ Repository = "https://github.com/shinyaoguri/heritage-crawler"
 packages = ["src/heritage_crawler"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# src も対象に含めて docstring の実例 (doctest) を実行する。doctest が説明して
+# いるのはゼロ詰め ID・未正規化の都道府県・和暦つきの日付といった非自明な入力で、
+# 検査されないまま腐ると読んだ人を誤らせる (#20)。
+# 相手先へ出る doctest は無いので、CI からデータベースを叩かない方針には触れない。
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"
 
 [tool.ruff]
 line-length = 100

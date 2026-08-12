@@ -289,6 +289,10 @@ pytest -q
 ./scripts/check-freshness.sh
 ```
 
+`pytest` は `tests/` に加えて `src/` の docstring 内の実例 (doctest) も実行する。
+ゼロ詰め ID・未正規化の都道府県・和暦つきの日付といった非自明な入力を説明して
+いる箇所なので、動く例であることを検査で保つ。
+
 **CI からデータベースへはアクセスしない。** 外部サイトに依存するテストは不安定な
 うえ、相手先に不要な負荷をかける。唯一の例外が疎通確認
 (`.github/workflows/reachability.yml`) で、これは手で押したときだけ走る。
