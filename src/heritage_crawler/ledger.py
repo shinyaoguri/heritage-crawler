@@ -11,6 +11,10 @@
 
 - 検索結果の件数表示 = **指定**単位 (既知の総数と突き合わせるのはこちら)
 - CSV の行数 = **棟**単位 (102 は 1 指定あたり約 2.5 棟)
+
+そのうえで、**件数表示どうしの引き算では網羅性を判定できない**。地域をまたぐ重複と
+取りこぼしが相殺して消えるため (Issue #28)。判定には CSV を読んで数えたキーの
+異なり数を使う (``summarize`` の ``unique_key_count``)。
 """
 
 from __future__ import annotations
@@ -279,20 +283,48 @@ class CategorySummary:
     row_count: int
     """CSV 行数の合計 (棟単位)。指定単位とは比べない。"""
 
+    unique_key_count: int
+    """CSV に実際に現れた ``(台帳ID, 管理対象ID)`` の異なり数 (棟単位)。
+
+    件数表示ではなく中身を数えたもの。重複を除いた実数がこれで分かる。
+    """
+
     @property
     def is_complete(self) -> bool:
         return self.fetched_areas == self.total_areas
 
     @property
     def difference(self) -> int | None:
-        """地域合計 − 全国件数。
+        """地域合計 − 全国件数。**重複と取りこぼしが相殺して隠れる** (Issue #28)。
 
         負 = どの地域でも引けない指定がある (取りこぼし)。
         正 = 複数の地域に現れる指定がある (統合時に (台帳ID, 管理対象ID) で排除する)。
+
+        どちらも件数表示どうしの引き算なので、重複 34 と取りこぼし 1 が同時にあれば
+        「重複 33」としか出ない。棟に展開されない分類では ``missing_count`` を見る。
         """
         if self.whole_count is None:
             return None
         return self.area_hit_count - self.whole_count
+
+    @property
+    def duplicate_rows(self) -> int:
+        """複数の地域の CSV に現れた行数。統合時に落ちるぶんで、異常ではない。"""
+        return self.row_count - self.unique_key_count
+
+    @property
+    def missing_count(self) -> int | None:
+        """全国件数 − 手元の異なり数。**重複と相殺しない取りこぼしの数** (Issue #28)。
+
+        正 = どの地域でも引けない指定がある。負 = 全国件数の数え方が指定単位で
+        ないか、同じ管理対象を共有する 2 指定を 2 と数えている。
+
+        棟に展開される分類 (102) では異なり数が棟単位で全国件数と単位が違うため
+        None を返す。そちらは ``difference`` でしか見られない。
+        """
+        if self.whole_count is None or self.category.expands_to_buildings:
+            return None
+        return self.whole_count - self.unique_key_count
 
 
 def summarize(
@@ -300,6 +332,11 @@ def summarize(
     categories: Sequence[Category],
     areas: Sequence[Area] = SEARCH_AREAS,
 ) -> list[CategorySummary]:
+    """マニフェストの件数に加え、CSV の中身を読んでキーの異なり数も数える。
+
+    件数表示だけでは重複と取りこぼしが相殺して見えないため (Issue #28)、
+    全 CSV (2 万行台) を読み直す。数秒かかるが、報告のたびにしか走らない。
+    """
     summaries = []
     for category in categories:
         entries = [
@@ -307,6 +344,7 @@ def summarize(
             for area in areas
             if (entry := cache.entries.get(entry_key(category, area))) is not None
         ]
+        keys = {row.key for row in read_ledger_rows(cache, [category], areas)}
         summaries.append(
             CategorySummary(
                 category=category,
@@ -315,28 +353,44 @@ def summarize(
                 area_hit_count=sum(entry.hit_count for entry in entries),
                 whole_count=cache.whole_counts.get(category.code),
                 row_count=sum(entry.row_count for entry in entries),
+                unique_key_count=len(keys),
             )
         )
     return summaries
 
 
+def _note(summary: CategorySummary) -> str:
+    """行末に出す気付き。網羅できていれば空。"""
+    if not summary.is_complete:
+        return f"未取得 {summary.total_areas - summary.fetched_areas} 地域"
+    if (missing := summary.missing_count) is not None:
+        # 中身の異なり数と比べているので、重複があっても取りこぼしが隠れない。
+        if missing > 0:
+            return f"どの地域でも引けない {missing:,} 件"
+        if missing < 0:
+            return f"全国件数より {-missing:,} 件多い (件数表示の数え方を疑う)"
+    elif summary.difference is not None:
+        # 棟に展開される分類は異なり数 (棟) と全国件数 (指定) の単位が違う。
+        # 件数表示どうしの差しか見られず、重複と取りこぼしは相殺しうる (Issue #28)。
+        if summary.difference < 0:
+            return f"どの地域でも引けない {-summary.difference:,} 件"
+        if summary.difference:
+            return f"地域をまたぐ重複 {summary.difference:,} 件"
+    return ""
+
+
 def format_summary(summaries: Sequence[CategorySummary]) -> str:
     """取得結果を人が読める形にする。網羅できていなければ行末で知らせる。"""
-    lines = ["分類  地域      全国   地域合計        棟", "-" * 60]
+    lines = ["分類  地域      全国   地域合計        棟      異なり", "-" * 72]
     notes = []
     for summary in summaries:
         whole = f"{summary.whole_count:,}" if summary.whole_count is not None else "-"
-        note = ""
-        if not summary.is_complete:
-            note = f"  ← 未取得 {summary.total_areas - summary.fetched_areas} 地域"
-        elif summary.difference is not None and summary.difference < 0:
-            note = f"  ← どの地域でも引けない {-summary.difference:,} 件"
-        elif summary.difference:
-            note = f"  ← 地域をまたぐ重複 {summary.difference:,} 件"
+        note = _note(summary)
         lines.append(
             f"{summary.category.code}  "
             f"{summary.fetched_areas:>2}/{summary.total_areas:<2}  "
-            f"{whole:>8}  {summary.area_hit_count:>8,}  {summary.row_count:>8,}{note}"
+            f"{whole:>8}  {summary.area_hit_count:>8,}  {summary.row_count:>8,}  "
+            f"{summary.unique_key_count:>8,}" + (f"  ← {note}" if note else "")
         )
         known = summary.category.known_designation_count
         if summary.whole_count is not None and summary.whole_count != known:
@@ -344,5 +398,5 @@ def format_summary(summaries: Sequence[CategorySummary]) -> str:
                 f"※ {summary.category.code} の全国件数が 2026-08-11 の実測 "
                 f"({known:,}) から {summary.whole_count - known:+,} 件変わっている"
             )
-    lines.append("(全国・地域合計は指定単位、棟は CSV の行数)")
+    lines.append("(全国・地域合計は指定単位、棟は CSV の行数、異なりは棟のキーの異なり数)")
     return "\n".join(lines + notes)

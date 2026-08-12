@@ -26,11 +26,19 @@ class Category:
     増減するため厳密一致の検査には使えないが、取得の欠損を見つける目安になる。
     """
 
+    expands_to_buildings: bool = False
+    """1 つの指定が CSV で複数の棟に展開されるか (2026-08-11 の実測)。
+
+    展開されない分類では CSV の ``(台帳ID, 管理対象ID)`` の異なり数がそのまま
+    指定件数になるので、全国件数と直接突き合わせられる (``ledger.summarize``)。
+    102 だけは 1 指定あたり約 2.5 棟に展開され、単位が違うので比べられない。
+    """
+
 
 # 取得対象の分類。世界遺産 (901) は建造物・記念物と別軸の指定のため含めない。
 # 名前は指定行為の呼び方に合わせた (record.DESIGNATION_KINDS と同じ 登録 / 指定 / 選定)。
 REGISTERED: Final = Category("101", "登録有形文化財（建造物）", 14748)
-DESIGNATED: Final = Category("102", "国宝・重要文化財（建造物）", 2633)
+DESIGNATED: Final = Category("102", "国宝・重要文化財（建造物）", 2633, expands_to_buildings=True)
 SELECTED: Final = Category("103", "重要伝統的建造物群保存地区", 126)
 MONUMENTS: Final = Category("401", "史跡名勝天然記念物", 3281)
 """記念物 (ADR 0012)。1 分類に 6 種別が同居し、棟には展開されない。"""
