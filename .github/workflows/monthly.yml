@@ -1,0 +1,220 @@
+name: 月次の差分更新
+
+# 台帳を毎月まるごと取り直し、差分だけ詳細ページを取り直して 10 のデータ
+# リポジトリへ push する (ADR 0006 / ADR 0018)。
+#
+# **前回の状態はデータリポジトリの JSON Lines そのもの。** キャッシュも生 HTML も
+# ここへは持ち回らない (Actions のキャッシュは 7 日でエビクトされ、月次には残らない)。
+# だから毎回 10 リポジトリを clone するところから始める。
+#
+# 取り直すのは新規・台帳の値が変わったぶん・全体の 1/12 の巡回だけで、
+# 所要は約 70 分 (台帳 204 リクエスト + 約 2,000 件)。ジョブ上限 6 時間に対して
+# 余裕がある。**生成物は決定的**なので、データが変わらない月はコミットが立たない。
+#
+# 必要な secret は 2 つ。code4heritage org に GitHub App を作り、**対象の 10
+# リポジトリにだけ**インストールして contents:write を与える。
+#
+# - DATA_PUSH_CLIENT_ID   … App の Client ID (App 設定ページに出る Iv23... の値)
+# - DATA_PUSH_PRIVATE_KEY … App の秘密鍵 (PEM のまま)
+#
+# 個人の PAT を使わないのは、有効期限が切れた月に静かに失敗するのを避けるため。
+# App のトークンは実行のたびに発行され、期限切れが無い。
+
+on:
+  schedule:
+    # 毎月 2 日 03:00 JST (前日 18:00 UTC)。相手は公共サイトなので深夜帯に寄せる
+    - cron: "0 18 1 * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 計画だけを出す (相手先へ出ず、push もしない)
+        type: boolean
+        default: false
+      month:
+        description: 巡回の枠に使う月 1〜12 (空なら実行月)
+        type: string
+        default: ""
+
+# 同時に走らせない。レートの上限を守れるのは 1 プロセスの中だけで (ADR 0010)、
+# 2 本走れば相手から見た実効レートが 2 倍になる。走っている回を殺さないのは、
+# push まで終える前に切ると一部のリポジトリだけ更新された状態で残るため。
+concurrency:
+  group: monthly-update
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  DATA_DIR: data
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # 実測 70 分 + 相手が遅いときの余裕。無応答のまま 6 時間回り続けさせない
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: 依存を導入
+        run: pip install -e .
+
+      # 秘密が無いまま走ると、台帳を取り終えた 30 分後に push で落ちる。
+      # 相手先へアクセスする前に気付けるよう、最初に確かめる。
+      - name: push 先の資格情報があるか確かめる
+        env:
+          CLIENT_ID: ${{ secrets.DATA_PUSH_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::DATA_PUSH_CLIENT_ID / DATA_PUSH_PRIVATE_KEY が無い。" \
+              "code4heritage org の GitHub App (contents:write) を作って登録する"
+            exit 1
+          fi
+
+      - name: データリポジトリ用のトークンを発行
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.DATA_PUSH_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
+          # リポジトリ名を並べない。**対応表の正本は catalog.TARGET_DATASETS**
+          # (ADR 0009 / ADR 0012) で、ここに書くと二重管理になる。App の
+          # インストール先を 10 リポジトリに絞ることで範囲を限る。
+          owner: code4heritage
+          # App が他の権限を持っていても、この実行では書き込み先を絞る
+          permission-contents: write
+
+      # 出力先の一覧はコードから出す (対応表を YAML に書き写さない)。
+      - name: データリポジトリを clone (= 前回の状態)
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$DATA_DIR"
+          python - >repos.txt <<'PY'
+          from heritage_crawler.catalog import TARGET_DATASETS
+
+          print("\n".join(dataset.repo for dataset in TARGET_DATASETS))
+          PY
+          while read -r repo; do
+            git clone --depth 1 --quiet \
+              "https://x-access-token:${GH_TOKEN}@github.com/code4heritage/${repo}.git" \
+              "${DATA_DIR}/${repo}"
+          done <repos.txt
+          echo "clone した: $(wc -l <repos.txt) リポジトリ"
+
+      - name: 1 段目 — 台帳 (CSV) を取り直す
+        run: |
+          set -euo pipefail
+          {
+            echo '## 台帳'
+            echo '```'
+            heritage-crawler fetch-ledger
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # **--recover が要る。** 都道府県が空の行はどの seat_pref でも引けず、
+      # 一覧から回収しないと台帳が全国件数に届かない (401 に 1 件実在。ADR 0017)。
+      # 回収しないままだと網羅性が確かめられず、消えた指定を落とせなくなる。
+      - name: 一覧と突き合わせて取りこぼしを回収する
+        run: |
+          set -euo pipefail
+          {
+            echo '## 網羅性 (検索結果一覧との突き合わせ)'
+            echo '```'
+            heritage-crawler audit-listing --recover
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 2 段目 — 差分だけ取り直して書き直す
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          MONTH: ${{ inputs.month }}
+        run: |
+          set -euo pipefail
+          args=(--output-dir "$DATA_DIR")
+          if [ "${DRY_RUN:-false}" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "${MONTH:-}" ]; then args+=(--month "$MONTH"); fi
+          {
+            echo '## 差分更新'
+            echo '```'
+            heritage-crawler update-records "${args[@]}"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 生成物は決定的なので、データが変わっていなければ 1 バイトも動かない
+      # (ADR 0014)。**差分の無いリポジトリにはコミットを作らない。**
+      - name: 変わったリポジトリだけ commit して push
+        if: inputs.dry-run != true
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOT: ${{ steps.token.outputs.app-slug }}[bot]
+        run: |
+          set -euo pipefail
+          changed=0
+          {
+            echo '## push'
+            while read -r repo; do
+              cd "${GITHUB_WORKSPACE}/${DATA_DIR}/${repo}"
+              git add -A
+              if git diff --cached --quiet; then
+                echo "- ${repo}: 差分なし"
+                continue
+              fi
+              summary=$(git diff --cached --shortstat)
+              # 月は日本時間で切る — 巡回の枠を決めるのも日本時間の月 (ADR 0018)。
+              # UTC のまま書くと、月初の実行でコミットの月が 1 つ前になる
+              git -c "user.name=${BOT}" \
+                  -c "user.email=${BOT}@users.noreply.github.com" \
+                  commit --quiet -m "chore(data): $(TZ=Asia/Tokyo date +%Y-%m) の差分を反映" \
+                                 -m "出典: 国指定文化財等データベース (文化庁)" \
+                                 -m "実行: ${RUN_URL}"
+              git push --quiet
+              echo "- ${repo}: ${summary}"
+              changed=$((changed + 1))
+            done <"${GITHUB_WORKSPACE}/repos.txt"
+            echo
+            echo "更新したリポジトリ: ${changed}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 月次は誰も見ていないところで走る。失敗を Issue に残さないと、
+      # データが何か月も止まっていることに気付けない (freshness.yml と同じ形)。
+      - name: 失敗を Issue に残す
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="月次の差分更新が失敗した"
+          {
+            echo "月次の差分更新 (\`.github/workflows/monthly.yml\`) が失敗した。"
+            echo "データリポジトリは前回のままで、行が消えることはない。"
+            echo
+            echo "実行: ${RUN_URL}"
+            echo
+            echo "手元で追うときは (キャッシュがあるローカルで):"
+            echo
+            echo '```'
+            echo "heritage-crawler fetch-ledger"
+            echo "heritage-crawler audit-listing --recover"
+            echo "heritage-crawler update-records --dry-run"
+            echo '```'
+          } >body.md
+
+          existing=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")] | .[0].number // empty")
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
