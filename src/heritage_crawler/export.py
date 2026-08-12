@@ -19,18 +19,18 @@ from typing import Any, Final
 
 from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write
 from heritage_crawler.catalog import (
-    BUILDING_DATASETS,
-    CLASS_SPLIT_CATEGORIES,
+    KIND_SPLIT_CATEGORIES,
     SEARCH_AREAS,
+    TARGET_DATASETS,
     Area,
     Category,
     Dataset,
-    dataset_for,
     datasets_for,
+    datasets_of,
 )
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
 from heritage_crawler.ledger import read_ledger_rows
-from heritage_crawler.record import BuildReport, build_record
+from heritage_crawler.record import BuildReport, build_record, routing_kinds
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,8 @@ def build_dataset(
         if page is None:
             continue
         built = build_record(row, page, report)
-        groups[(_dataset_of(row.category, built.record, report), built.location.area)].append(
-            built.record
-        )
+        for dataset in _datasets_of(row.category, built.record, report):
+            groups[(dataset, built.location.area)].append(built.record)
         report.built += 1
         if report.built % PROGRESS_EVERY == 0:
             logger.info("%d 件組み立てた", report.built)
@@ -89,16 +88,27 @@ def output_path(output_dir: Path, dataset: Dataset, area: Area) -> Path:
     return output_dir / dataset.repo / "data" / f"{area.code}_{area.slug}.jsonl"
 
 
-def _dataset_of(category: Category, record: dict[str, Any], report: BuildReport) -> Dataset:
-    """棟 1 件の書き先リポジトリを決める (ADR 0009)。
+def _datasets_of(
+    category: Category, record: dict[str, Any], report: BuildReport
+) -> list[Dataset]:
+    """1 件の書き先リポジトリを決める (ADR 0009 / ADR 0012)。
 
-    102 だけ国宝と重要文化財でリポジトリが分かれる。区分が読めなければ重要文化財側
-    へ送るが、黙って送ると振り分けの誤りに気付けないので件数を数える。
+    **複数返ることがある** — 401 の複合指定は種別を 2 つ持ち、どちらの種別から
+    見ても構成員なので両方へ書く。
+
+    区分が読めないときの行き先は分類で違う。102 には受け皿 (重要文化財) が
+    あるが 401 には無い。どちらも黙って通すと振り分けの誤りに気付けないので、
+    受け皿へ落ちたぶんと書き先が無かったぶんを別々に数える。
     """
-    treasure_class = record.get("national_treasure_class", "")
-    if not treasure_class and category in CLASS_SPLIT_CATEGORIES:
-        report.missing_treasure_class += 1
-    return dataset_for(category, treasure_class)
+    kinds = routing_kinds(category, record)
+    if not kinds and category in KIND_SPLIT_CATEGORIES:
+        report.missing_kind += 1
+    datasets = datasets_of(category, kinds)
+    if not datasets:
+        report.unroutable.append(
+            f"{record['ledger_id']}/{record['managed_id']} {record.get('name', '')}"
+        )
+    return datasets
 
 
 def _read_page(
@@ -117,7 +127,7 @@ def _read_page(
 
 def _group_order(group: tuple[Dataset, Area]) -> tuple[int, str]:
     dataset, area = group
-    return (BUILDING_DATASETS.index(dataset), area.code)
+    return (TARGET_DATASETS.index(dataset), area.code)
 
 
 def _note_stale_files(
@@ -155,12 +165,10 @@ def format_report(report: BuildReport) -> str:
     lines.extend(_counter_lines("対応表に無いラベル", report.unknown_labels))
     lines.extend(_counter_lines("日付として読めない値", report.invalid_dates))
     lines.extend(_anomaly_lines("CSV と詳細で名称が違う", report.name_mismatches))
-    if report.missing_annexes:
-        lines.append(f"附指定ありなのに一覧が空: {report.missing_annexes:,} 件")
-    if report.missing_treasure_class:
-        lines.append(
-            f"国宝・重文区分が読めず重要文化財として扱った: {report.missing_treasure_class:,} 件"
-        )
+    lines.extend(_anomaly_lines("種別が読めず書き先が無かった", report.unroutable))
+    lines.extend(_counter_lines("関連情報にありと出ているのに一覧が空", report.missing_rellists))
+    if report.missing_kind:
+        lines.append(f"区分が読めず受け皿のリポジトリへ送った: {report.missing_kind:,} 件")
     if report.prefecture_from_address:
         lines.append(f"都道府県を所在地から決めた: {report.prefecture_from_address:,} 件")
     if report.prefecture_unresolved:

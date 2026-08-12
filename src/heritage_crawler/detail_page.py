@@ -9,7 +9,8 @@
 - 主情報は ``<tr>`` の 3 セル (ラベル / ``：`` / 値)。ラベルは分類ごとに違う
 - 解説文と詳細解説はモーダルの ``<textarea>``。見出し (``解説文`` / ``詳細解説``)
   が何の文章かを表す。解説文は本文側の欄にも同じものが出る
-- 附指定は ``detail_rellist_N_M`` のモーダルに ``附名称`` / ``附員数`` の組で入る
+- ``detail_rellist_N_M`` のモーダルにはラベルと値の組が入る。中身は分類で変わる
+  (建造物系は附指定、401 は指定等後に行った措置の履歴)
 - 添付ファイルなどの有無は ``relatedinformation`` の表に ``なし`` か
   リンクとして出る
 
@@ -43,7 +44,7 @@ DETAILED_DESCRIPTION_TITLE: Final = "詳細解説"
 _SEPARATORS: Final = ("：", ":")
 _MODAL_ID_PREFIX: Final = "detail_"
 _PHOTO_MODAL_ID: Final = "detail_photolist"
-_ANNEX_MODAL_ID: Final = re.compile(r"detail_rellist_\d+_\d+")
+_RELLIST_MODAL_ID: Final = re.compile(r"detail_rellist_\d+_\d+")
 _RELATED_TABLE_ID: Final = "relatedinformation"
 _NO_INFORMATION: Final = "なし"
 """関連情報の欄に出る「無い」の表記。あるときは値ではなくリンクになる。"""
@@ -60,10 +61,15 @@ class DetailPage:
     """``解説文`` / ``詳細解説`` の見出し → 本文。改行はそのまま保つ。"""
 
     related: dict[str, bool] = field(default_factory=dict)
-    """関連情報のラベル → 有無 (``附指定`` / ``添付ファイル``)。"""
+    """関連情報のラベル → 有無 (``附指定`` / ``指定等後に行った措置`` / ``添付ファイル``)。"""
 
-    annexes: tuple[dict[str, str], ...] = ()
-    """附指定 1 件ぶんのラベル → 値 (``附名称`` / ``附員数``)。"""
+    rellists: tuple[dict[str, str], ...] = ()
+    """``detail_rellist_*`` モーダル 1 件ぶんのラベル → 値。
+
+    **何の一覧かは分類で変わる。** 建造物系は附指定 (``附名称`` / ``附員数``)、
+    401 は指定等後に行った措置の履歴 (``異動年月日`` / ``異動種別1`` ほか)。
+    ここでは区別せず、意味付けは ``record`` に任せる。
+    """
 
     has_photo: bool = False
     """写真の有無。画像そのものは扱わない (ADR 0007)。"""
@@ -100,7 +106,7 @@ class _DetailParser(HTMLParser):
         self.fields: dict[str, str] = {}
         self.texts: dict[str, str] = {}
         self.related: dict[str, bool] = {}
-        self.annexes: dict[str, dict[str, str]] = {}
+        self.rellists: dict[str, dict[str, str]] = {}
         self.has_photo = False
         self.rows_seen = 0
         self._rows: list[list[_Cell]] = []
@@ -187,9 +193,9 @@ class _DetailParser(HTMLParser):
         texts = [cell.text for cell in cells]
         if self._table == _RELATED_TABLE_ID:
             self._handle_related_row(texts)
-        elif _ANNEX_MODAL_ID.fullmatch(self._modal):
+        elif _RELLIST_MODAL_ID.fullmatch(self._modal):
             if _is_pair(texts):
-                self.annexes.setdefault(self._modal, {})[texts[0]] = texts[2]
+                self.rellists.setdefault(self._modal, {})[texts[0]] = texts[2]
         elif _is_pair(texts):
             self.rows_seen += 1
             if texts[2]:
@@ -242,11 +248,11 @@ def parse_detail_page(html: str) -> DetailPage:
         fields=parser.fields,
         texts=parser.texts,
         related=parser.related,
-        annexes=tuple(parser.annexes[key] for key in sorted(parser.annexes, key=_annex_order)),
+        rellists=tuple(parser.rellists[key] for key in sorted(parser.rellists, key=_rellist_order)),
         has_photo=parser.has_photo,
     )
 
 
-def _annex_order(modal_id: str) -> tuple[int, ...]:
+def _rellist_order(modal_id: str) -> tuple[int, ...]:
     """``detail_rellist_1_10`` が ``detail_rellist_1_2`` の後に来るように数で並べる。"""
     return tuple(int(number) for number in re.findall(r"\d+", modal_id))

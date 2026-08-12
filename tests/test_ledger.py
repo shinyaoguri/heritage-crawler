@@ -13,7 +13,7 @@ import pytest
 
 from conftest import FakeFetcher, fixture, make_csv
 from heritage_crawler.cache import LedgerCache
-from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS
+from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
 from heritage_crawler.ledger import (
     CSV_URL,
     INDEX_URL,
@@ -27,7 +27,7 @@ from heritage_crawler.ledger import (
 )
 from heritage_crawler.search_page import ParseError
 
-CATEGORY = BUILDING_CATEGORIES[1]  # 102
+CATEGORY = TARGET_CATEGORIES[1]  # 102
 HOKKAIDO = SEARCH_AREAS[0]
 TOKYO = SEARCH_AREAS[12]
 

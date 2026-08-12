@@ -10,14 +10,15 @@ import pytest
 
 from conftest import fixture
 from heritage_crawler import (
-    BUILDING_CATEGORIES,
     IRREGULAR_AREAS,
     NON_PREFECTURE_AREAS,
     PREFECTURES,
     SEARCH_AREAS,
     SELECTABLE_AREAS,
+    TARGET_CATEGORIES,
     detail_url,
 )
+from heritage_crawler.catalog import DESIGNATED, MONUMENTS, TARGET_DATASETS, datasets_of
 
 
 def test_detail_url_短い連番形式() -> None:
@@ -40,14 +41,43 @@ def test_detail_url_空の_ID_を拒否する(daichou_id: str, kanri_taishou_id:
         detail_url(daichou_id, kanri_taishou_id)
 
 
-def test_建造物系の分類は_101_102_103() -> None:
-    """世界遺産 (901) は建造物と別軸の指定なので含めない (ADR 0002)。"""
-    assert {c.code for c in BUILDING_CATEGORIES} == {"101", "102", "103"}
+def test_取得対象の分類は_101_102_103_401() -> None:
+    """世界遺産 (901) は建造物・記念物と別軸の指定なので含めない (ADR 0002 / 0012)。"""
+    assert {c.code for c in TARGET_CATEGORIES} == {"101", "102", "103", "401"}
+
+
+def test_401の複合指定は両方のリポジトリへ書く() -> None:
+    """種別を 2 つ持つ指定は、どちらの種別から見ても構成員 (ADR 0012)。"""
+    assert [dataset.repo for dataset in datasets_of(MONUMENTS, ["特別名勝", "特別史跡"])] == [
+        "special-historic-sites",
+        "special-places-of-scenic-beauty",
+    ]
+
+
+def test_特別指定は通常の種別と排他に振り分ける() -> None:
+    """特別史跡は史跡のうちから指定されるが、国宝・重文と同じく排他 (ADR 0012)。"""
+    assert [dataset.repo for dataset in datasets_of(MONUMENTS, ["特別史跡"])] == [
+        "special-historic-sites"
+    ]
+    assert [dataset.repo for dataset in datasets_of(MONUMENTS, ["史跡"])] == ["historic-sites"]
+
+
+def test_区分が読めないときの行き先は分類で違う() -> None:
+    """102 には受け皿があるが、401 には無い (種別不明を史跡に紛れ込ませない)。"""
+    assert [dataset.repo for dataset in datasets_of(DESIGNATED)] == [
+        "important-cultural-properties"
+    ]
+    assert datasets_of(MONUMENTS) == []
+
+
+def test_リポジトリ名は重複しない() -> None:
+    """出力ディレクトリ配下のディレクトリ名になるため、衝突すると混ざる。"""
+    assert len({dataset.repo for dataset in TARGET_DATASETS}) == len(TARGET_DATASETS)
 
 
 def test_分類コードは文字列で保持する() -> None:
     """CSV の台帳ID と突き合わせるため、数値にせず文字列のまま扱う。"""
-    for category in BUILDING_CATEGORIES:
+    for category in TARGET_CATEGORIES:
         assert isinstance(category.code, str)
 
 

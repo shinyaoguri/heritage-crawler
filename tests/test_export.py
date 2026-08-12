@@ -15,6 +15,7 @@ from conftest import fixture, make_csv, make_row
 from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
 from heritage_crawler.catalog import (
     DESIGNATED,
+    MONUMENTS,
     REGISTERED,
     SEARCH_AREAS,
     SELECTED,
@@ -40,6 +41,17 @@ def with_treasure_class(value: str) -> str:
     html = fixture("detail_102.html")
     assert html.count(TREASURE_CLASS_CELL) == 1
     return html.replace(TREASURE_CLASS_CELL, f"\t\t\t\t{value}\t\t\t</td>")
+
+
+def without_kinds(html: str) -> str:
+    """401 の詳細ページの主情報から種別１・種別２の値だけを抜く。
+
+    措置の履歴 (下部のモーダル) にも同じ語が出るので、主情報の欄だけを空にする。
+    """
+    for cell in ("\t\t\t\t特別名勝\t\t\t</td>", "\t\t\t\t特別史跡\t\t\t</td>"):
+        assert html.count(cell) == 1
+        html = html.replace(cell, "\t\t\t\t\t\t\t</td>")
+    return html
 
 
 def area_named(name: str) -> Area:
@@ -116,7 +128,7 @@ def test_102は国宝と重要文化財でリポジトリが分かれる(cache_d
     report = build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
 
     assert report.built == 2
-    assert not report.missing_treasure_class
+    assert not report.missing_kind
     treasures = lines(out / "national-treasures/data/29_nara.jsonl")
     importants = lines(out / "important-cultural-properties/data/29_nara.jsonl")
     assert [record["managed_id"] for record in treasures] == ["2594"]
@@ -136,11 +148,49 @@ def test_国宝重文区分が読めない棟は重要文化財として扱い�
 
     report = build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
 
-    assert report.missing_treasure_class == 1
+    assert report.missing_kind == 1
     assert report.has_anomalies
     assert (out / "important-cultural-properties/data/29_nara.jsonl").exists()
     assert not (out / "national-treasures").exists()
-    assert "国宝・重文区分が読めず重要文化財として扱った: 1 件" in format_report(report)
+    assert "区分が読めず受け皿のリポジトリへ送った: 1 件" in format_report(report)
+
+
+def test_401の複合指定は両方のリポジトリへ書く(cache_dir: Path, tmp_path: Path) -> None:
+    """種別を 2 つ持つ指定は、どちらの種別の一覧から見ても構成員 (ADR 0012)。"""
+    ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+    put_ledger(ledger, MONUMENTS, area_named("東京都"), ["712"])
+    put_detail(detail, MONUMENTS, "712", fixture("detail_401.html"))
+    out = tmp_path / "repos"
+
+    report = build_dataset(ledger, detail, [MONUMENTS], output_dir=out)
+
+    # 1 件を 2 箇所へ書くが、組み立てたレコードは 1 つ
+    assert report.built == 1
+    assert not report.unroutable
+    special_scenic = lines(out / "special-places-of-scenic-beauty/data/13_tokyo.jsonl")
+    special_historic = lines(out / "special-historic-sites/data/13_tokyo.jsonl")
+    assert special_scenic == special_historic
+    assert special_scenic[0]["name"] == "旧浜離宮庭園"
+    assert special_scenic[0]["types"] == ["特別名勝", "特別史跡"]
+    # 特別指定は通常の種別と排他 (名勝・史跡側には出さない)
+    assert not (out / "places-of-scenic-beauty").exists()
+    assert not (out / "historic-sites").exists()
+
+
+def test_401で種別が読めない行はどこへも書かず報せる(cache_dir: Path, tmp_path: Path) -> None:
+    """401 に受け皿は無い。黙って史跡へ送ると振り分けの誤りに気付けない (ADR 0012)。"""
+    ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+    put_ledger(ledger, MONUMENTS, area_named("東京都"), ["712"])
+    put_detail(detail, MONUMENTS, "712", without_kinds(fixture("detail_401.html")))
+    out = tmp_path / "repos"
+
+    report = build_dataset(ledger, detail, [MONUMENTS], output_dir=out)
+
+    assert report.built == 1
+    assert report.unroutable == ["401/712 旧浜離宮庭園"]
+    assert report.has_anomalies
+    assert not list(out.rglob("*.jsonl"))
+    assert "種別が読めず書き先が無かった: 1 件" in format_report(report)
 
 
 def test_行はキーで安定ソートする(cache_dir: Path, tmp_path: Path) -> None:

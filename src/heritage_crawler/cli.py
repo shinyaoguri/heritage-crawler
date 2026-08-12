@@ -2,8 +2,8 @@
 
 2 段構え (ADR 0002) をそのままコマンドにしてある。
 
-1. ``fetch-ledger`` で分類 × 地域の CSV を取る (153 リクエスト / 約 25 分)
-2. ``fetch-detail`` で台帳の各行から詳細ページを取る (2 万件 / 約 6 時間)
+1. ``fetch-ledger`` で分類 × 地域の CSV を取る (204 リクエスト / 約 30 分)
+2. ``fetch-detail`` で台帳の各行から詳細ページを取る (約 2.4 万件 / 約 6.6 時間)
 
 どちらも中断しても取得済みを飛ばして再開する。既定のレート上限は 1 req/s
 (間隔 1 秒)。相手はこれを超えると 200 でエラーページを返す (ADR 0011)。
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from heritage_crawler.cache import DEFAULT_CACHE_DIR, DetailCache, LedgerCache, detail_key
-from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS, Area, Category
+from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES, Area, Category
 from heritage_crawler.detail import (
     DetailError,
     Target,
@@ -67,7 +67,7 @@ def _target_options(parser: argparse.ArgumentParser) -> None:
         "--category",
         action="append",
         dest="categories",
-        choices=[category.code for category in BUILDING_CATEGORIES],
+        choices=[category.code for category in TARGET_CATEGORIES],
         help="対象の分類コード (既定: 101 102 103)",
     )
     parser.add_argument(
@@ -192,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     ledger_cache = LedgerCache(args.cache_dir)
-    categories = _selected(getattr(args, "categories", None), BUILDING_CATEGORIES, "code")
+    categories = _selected(getattr(args, "categories", None), TARGET_CATEGORIES, "code")
     areas = _selected(getattr(args, "areas", None), SEARCH_AREAS, "name")
 
     if args.command.endswith("-ledger"):

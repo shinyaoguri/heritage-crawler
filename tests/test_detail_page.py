@@ -48,7 +48,7 @@ def test_102_は詳細解説と附指定を持つ() -> None:
     assert page.fields["種別"] == "近世以前／神社"
     assert page.detailed_description.startswith("石上神宮拝殿　一棟")
     assert "\n" in page.detailed_description  # textarea の改行は保つ
-    assert page.annexes == ({"附名称": "棟札", "附員数": "6枚"},)
+    assert page.rellists == ({"附名称": "棟札", "附員数": "6枚"},)
     assert page.related == {"附指定": True, "添付ファイル": False}
     assert page.has_photo is False
 

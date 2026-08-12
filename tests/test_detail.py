@@ -12,7 +12,7 @@ import pytest
 
 from conftest import FakeFetcher, make_csv, make_row
 from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
-from heritage_crawler.catalog import BUILDING_CATEGORIES, SEARCH_AREAS
+from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
 from heritage_crawler.detail import (
     DetailError,
     Target,
@@ -24,7 +24,7 @@ from heritage_crawler.detail import (
     summarize_details,
 )
 
-CATEGORY = BUILDING_CATEGORIES[1]  # 102
+CATEGORY = TARGET_CATEGORIES[1]  # 102
 
 # 実物の詳細ページは 33〜55 KB。取得層は小さすぎる応答をエラーページとして
 # 弾くので (ADR 0011)、身代わりも実物なみの大きさにする。
