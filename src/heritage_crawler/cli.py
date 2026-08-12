@@ -39,7 +39,20 @@ from heritage_crawler.http import (
     PoliteClient,
     RateLimiter,
 )
-from heritage_crawler.ledger import LedgerError, fetch_ledgers, format_summary, summarize
+from heritage_crawler.ledger import (
+    LedgerError,
+    Session,
+    fetch_ledgers,
+    format_summary,
+    summarize,
+)
+from heritage_crawler.listing import (
+    ListingError,
+    audit_listing,
+    fetch_listing,
+    format_audits,
+    recover_missing,
+)
 from heritage_crawler.search_page import ParseError
 
 CONTACT_ENV: Final = "HERITAGE_CRAWLER_CONTACT"
@@ -80,8 +93,12 @@ def _target_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _access_options(parser: argparse.ArgumentParser) -> None:
-    """相手先へのアクセスの仕方 (ADR 0002 のマナー)。"""
+def _access_options(parser: argparse.ArgumentParser, *, resumable: bool = True) -> None:
+    """相手先へのアクセスの仕方 (ADR 0002 のマナー)。
+
+    ``resumable`` が偽なら ``--force`` を出さない。取得済みを飛ばす仕組みが
+    無いコマンド (毎回すべて取り直すもの) では意味を持たないため。
+    """
     parser.add_argument(
         "--interval",
         type=_seconds,
@@ -96,7 +113,8 @@ def _access_options(parser: argparse.ArgumentParser) -> None:
         default=os.environ.get(CONTACT_ENV, DEFAULT_CONTACT),
         help=f"User-Agent に載せる連絡先 (環境変数 {CONTACT_ENV} でも指定できる)",
     )
-    parser.add_argument("--force", action="store_true", help="取得済みのぶんも取り直す")
+    if resumable:
+        parser.add_argument("--force", action="store_true", help="取得済みのぶんも取り直す")
 
 
 def _seconds(value: str) -> float:
@@ -129,6 +147,17 @@ def build_parser() -> argparse.ArgumentParser:
     _access_options(fetch)
 
     subparsers.add_parser("report-ledger", help="キャッシュ済みの台帳を既知の件数と突き合わせる")
+
+    audit = subparsers.add_parser(
+        "audit-listing", help="検索結果一覧を全ページ辿って台帳の網羅性を確かめる"
+    )
+    _target_options(audit)
+    _access_options(audit, resumable=False)
+    audit.add_argument(
+        "--recover",
+        action="store_true",
+        help="地域では引けない指定を一覧から台帳へ回収する (ADR 0017)",
+    )
 
     detail = subparsers.add_parser("fetch-detail", help="台帳の各行から詳細ページを取得する")
     _target_options(detail)
@@ -197,6 +226,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command.endswith("-ledger"):
         return _run_ledger(args, ledger_cache, categories, areas)
+    if args.command == "audit-listing":
+        return _run_audit(args, ledger_cache, categories, areas)
     if args.command == "build-records":
         return _run_build(args, ledger_cache, categories, areas)
     return _run_detail(args, ledger_cache, categories, areas)
@@ -221,6 +252,52 @@ def _run_ledger(
             return 1
 
     print(format_summary(summarize(cache, categories, areas)))
+    return 0
+
+
+def _run_audit(
+    args: argparse.Namespace,
+    cache: LedgerCache,
+    categories: Sequence[Category],
+    areas: Sequence[Area],
+) -> int:
+    """一覧を全ページ辿って台帳と突き合わせる (ADR 0017)。
+
+    棟に展開される分類は突き合わせられないので飛ばす。1 件でも取りこぼしが
+    残っていれば異常終了する — 気付かずに次の工程へ進まないため。
+    """
+    client = PoliteClient(contact=args.contact, interval=args.interval, timeout=args.timeout)
+    session = Session(client)
+    audits = []
+    recovered = 0
+    try:
+        for category in categories:
+            if category.expands_to_buildings:
+                logger.info("%s は棟に展開されるため一覧とは突き合わせられない", category.code)
+                continue
+            audit = audit_listing(cache, fetch_listing(client, session, category), areas)
+            audits.append(audit)
+            if args.recover:
+                recovered += recover_missing(cache, audit)
+    except KeyboardInterrupt:
+        logger.warning("中断した")
+        return 130
+    except (FetchError, ListingError, LedgerError, ParseError) as error:
+        logger.error("%s", error)
+        return 1
+
+    if not audits:
+        logger.error("突き合わせられる分類が無い (棟に展開されない分類を --category で選ぶ)")
+        return 1
+
+    print(format_audits(audits))
+    missing = sum(len(audit.missing) for audit in audits)
+    if args.recover:
+        print(f"回収した行: {recovered:,} 件 (台帳として読めるようになった)")
+        return 0
+    if missing:
+        logger.error("取りこぼしが %d 件ある。--recover を付けると台帳へ回収する", missing)
+        return 1
     return 0
 
 

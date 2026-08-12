@@ -41,6 +41,14 @@ def test_保存先は_ASCII_のファイル名にする(cache_dir: Path) -> None
     assert path.name.isascii()
 
 
+def test_回収した行は地域別と別のファイルに置く(cache_dir: Path) -> None:
+    """地域別 (<コード>-<slug>.csv) と名前が衝突しない置き場にする (ADR 0017)。"""
+    cache = LedgerCache(cache_dir)
+    path = cache.recovered_csv_path(CATEGORY)
+    assert path == cache_dir / "ledger" / "102" / "recovered.csv"
+    assert path != cache.csv_path(CATEGORY, HOKKAIDO)
+
+
 def test_取得した_CSV_とマニフェストを書く(cache_dir: Path) -> None:
     cache = LedgerCache(cache_dir)
     cache.record(CATEGORY, HOKKAIDO, entry(), b"\xef\xbb\xbfcsv")

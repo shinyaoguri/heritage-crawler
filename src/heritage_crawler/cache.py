@@ -73,6 +73,14 @@ class LedgerCache:
     def csv_path(self, category: Category, area: Area) -> Path:
         return self.ledger_dir / category.code / f"{area.code}-{area.slug}.csv"
 
+    def recovered_csv_path(self, category: Category) -> Path:
+        """地域では引けない指定を一覧から組み立て直した CSV の置き場 (ADR 0017)。
+
+        地域別 (``<コード>-<slug>.csv``) と名前が衝突しない形にしてある。
+        取得ではなく検査の産物なので、マニフェストには記録しない。
+        """
+        return self.ledger_dir / category.code / "recovered.csv"
+
     @property
     def entries(self) -> dict[str, LedgerEntry]:
         if self._entries is None:

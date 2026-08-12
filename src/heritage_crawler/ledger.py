@@ -95,15 +95,19 @@ def read_ledger_rows(
     categories: Sequence[Category],
     areas: Sequence[Area] = SEARCH_AREAS,
 ) -> Iterator[LedgerRow]:
-    """キャッシュ済みの台帳 CSV を分類 × 地域の順に読む。
+    """キャッシュ済みの台帳 CSV を分類 × 地域の順に読み、最後に回収ぶんを読む。
 
     重複は落とさない。同じ棟が複数の地域の CSV に現れることがあるため
     (102 の琵琶湖疏水施設が滋賀県と京都府の両方に出る)、必要な側で
     ``LedgerRow.key`` を使って落とす。
+
+    回収 CSV (``listing.recover_missing``) は、地域では引けない指定を一覧から
+    組み立て直したもの。地域別と同じ 18 列なので、読む側は区別しなくてよい。
     """
     for category in categories:
-        for area in areas:
-            path = cache.csv_path(category, area)
+        paths = [cache.csv_path(category, area) for area in areas]
+        paths.append(cache.recovered_csv_path(category))
+        for path in paths:
             if not path.exists():
                 continue
             for row in read_csv_rows(path.read_bytes()):
@@ -215,20 +219,35 @@ def fetch_one(
     return entry, raw
 
 
-def _search(fetcher: Fetcher, session: Session, category: Category, area_name: str) -> SearchPage:
-    """検索して結果ページを読む。トークンが失効していたら 1 度だけ取り直す。"""
+def search[Page](
+    fetcher: Fetcher,
+    session: Session,
+    category: Category,
+    area_name: str,
+    parse: Callable[[str], Page],
+) -> Page:
+    """検索して結果ページを読む。トークンが失効していたら 1 度だけ取り直す。
+
+    同じ応答から読みたいものが 2 通りある — CSV 出力の hidden 値
+    (``parse_search_page``) と結果一覧そのもの (``parse_listing_page``) —
+    ので、読み方を渡してもらう。
+    """
     for attempt in (1, 2):
         html = fetcher.post(
             SEARCH_URL, search_fields(session.token, category, area_name)
         ).decode("utf-8")
         try:
-            return parse_search_page(html)
+            return parse(html)
         except ParseError as error:
             if attempt == 2:
                 raise
             logger.warning("検索応答を読めなかった (%s)。トークンを取り直して再試行する", error)
             session.refresh()
     raise AssertionError("到達しない")
+
+
+def _search(fetcher: Fetcher, session: Session, category: Category, area_name: str) -> SearchPage:
+    return search(fetcher, session, category, area_name, parse_search_page)
 
 
 def fetch_whole_count(fetcher: Fetcher, session: Session, category: Category) -> int:
