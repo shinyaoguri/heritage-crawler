@@ -289,6 +289,9 @@ gh workflow run monthly.yml -f dry-run=true
 - 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
   どの地域でも引けず**、一覧から回収しないと網羅性が確かめられない
   ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))
+- **相手先が 504 を返す時間帯がある** (1 req/s を守っていても起きる)。取得は
+  `scripts/retry.sh` で 5 分空けて繰り返す。60 秒の不調で 1 か月ぶんの更新を
+  落とさないため
 
 push 先が別リポジトリなので `GITHUB_TOKEN` では足りない。`code4heritage` org に
 GitHub App を作り、**対象の 10 リポジトリにだけ**インストールして

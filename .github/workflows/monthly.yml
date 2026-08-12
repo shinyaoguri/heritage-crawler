@@ -111,26 +111,32 @@ jobs:
           done <repos.txt
           echo "clone した: $(wc -l <repos.txt) リポジトリ"
 
+      # 相手先は時間帯によって 504 を返す (2026-08-12 の初回実行で実測)。HTTP
+      # クライアント側の再試行 (約 2 分) では抜けられないことがあり、**60 秒の
+      # 不調で 1 か月ぶんの更新が飛ぶ**のは割に合わない。fetch-ledger は取得済みを
+      # 飛ばして再開するので、繰り返しても取りに行くのは未取得のぶんだけ。
       - name: 1 段目 — 台帳 (CSV) を取り直す
         run: |
           set -euo pipefail
           {
             echo '## 台帳'
             echo '```'
-            heritage-crawler fetch-ledger
+            ./scripts/retry.sh 3 300 heritage-crawler fetch-ledger
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # **--recover が要る。** 都道府県が空の行はどの seat_pref でも引けず、
       # 一覧から回収しないと台帳が全国件数に届かない (401 に 1 件実在。ADR 0017)。
       # 回収しないままだと網羅性が確かめられず、消えた指定を落とせなくなる。
+      # こちらは再開の仕組みが無く、繰り返せば一覧を頭から辿り直す (約 190
+      # リクエスト)。それでも 1 か月待つよりは軽いので、回数を絞って再試行する。
       - name: 一覧と突き合わせて取りこぼしを回収する
         run: |
           set -euo pipefail
           {
             echo '## 網羅性 (検索結果一覧との突き合わせ)'
             echo '```'
-            heritage-crawler audit-listing --recover
+            ./scripts/retry.sh 2 300 heritage-crawler audit-listing --recover
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 

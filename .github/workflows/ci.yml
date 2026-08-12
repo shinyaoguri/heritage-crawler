@@ -54,6 +54,7 @@ jobs:
         run: |
           ./scripts/test-check-pr-title.sh
           ./scripts/test-check-freshness.sh
+          ./scripts/test-retry.sh
 
       - name: PR タイトルの Conventional Commits lint
         run: ./scripts/check-pr-title.sh
