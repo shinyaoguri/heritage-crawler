@@ -272,6 +272,36 @@ gh workflow run reachability.yml
 エラーページは取得層が弾いて失敗にする**ので、差し替えられていれば赤くなる
 ([ADR 0011](docs/decisions/0011-back-off-to-1-rps-and-detect-error-pages.md))。
 
+### 月次の差分更新 (`.github/workflows/monthly.yml`)
+
+毎月 2 日 03:00 JST に走り、10 のデータリポジトリを clone → 台帳を取り直す →
+差分だけ詳細を取り直す → 変わったリポジトリだけ push する (所要 約 70 分)。
+手で押すこともできる (`dry-run` で計画だけ、`month` で巡回の枠を指定)。
+
+```bash
+gh workflow run monthly.yml -f dry-run=true
+```
+
+- **差分が無い月はコミットが立たない。** 生成物が決定的なので、データが変わって
+  いなければ `git diff` が空になる
+- **失敗したら Issue が立つ** (同じ Issue が open なら追記する)。誰も見ていない
+  ところで走るので、止まっていることに気付けるようにしておく
+- 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
+  どの地域でも引けず**、一覧から回収しないと網羅性が確かめられない
+  ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))
+
+push 先が別リポジトリなので `GITHUB_TOKEN` では足りない。`code4heritage` org に
+GitHub App を作り、**対象の 10 リポジトリにだけ**インストールして
+`contents: write` を与え、secret を 2 つ登録する。
+
+| secret | 中身 |
+|---|---|
+| `DATA_PUSH_CLIENT_ID` | App の Client ID |
+| `DATA_PUSH_PRIVATE_KEY` | App の秘密鍵 (PEM のまま) |
+
+個人の PAT を使わないのは、**有効期限が切れた月に静かに失敗する**のを避けるため。
+App のトークンは実行のたびに発行され、期限切れが無い。
+
 設計判断は `docs/decisions/` の ADR に、進行状況と残る論点は
 [Issue #1](https://github.com/shinyaoguri/heritage-crawler/issues/1) に記録している。
 
