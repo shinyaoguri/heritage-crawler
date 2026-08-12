@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_row
-from heritage_crawler.catalog import BUILDING_CATEGORIES
+from heritage_crawler.catalog import TARGET_CATEGORIES
 from heritage_crawler.detail_page import DetailPage
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.record import (
@@ -18,9 +18,10 @@ from heritage_crawler.record import (
     build_record,
     normalize_date,
     resolve_location,
+    routing_kinds,
 )
 
-REGISTERED, DESIGNATED, SELECTED = BUILDING_CATEGORIES  # 101 / 102 / 103
+REGISTERED, DESIGNATED, SELECTED, MONUMENTS = TARGET_CATEGORIES  # 101 / 102 / 103 / 401
 
 
 def row(category=DESIGNATED, **columns: str) -> LedgerRow:  # type: ignore[no-untyped-def]
@@ -139,7 +140,7 @@ def test_附指定は配列にし添付ファイルは有無だけ持つ() -> No
         DetailPage(
             fields={"名称": "石上神宮拝殿", "所在都道府県": "奈良県"},
             related={"附指定": True, "添付ファイル": False},
-            annexes=({"附名称": "棟札", "附員数": "6枚"},),
+            rellists=({"附名称": "棟札", "附員数": "6枚"},),
             has_photo=True,
         ),
     )
@@ -147,7 +148,7 @@ def test_附指定は配列にし添付ファイルは有無だけ持つ() -> No
     assert record["annexes"] == [{"name": "棟札", "quantity": "6枚"}]
     assert record["has_attachment"] is False
     assert record["has_photo"] is True
-    assert report.missing_annexes == 0
+    assert not report.missing_rellists
 
 
 def test_附指定ありなのに一覧が空なら報せる() -> None:
@@ -156,7 +157,89 @@ def test_附指定ありなのに一覧が空なら報せる() -> None:
         DetailPage(fields={"名称": "石上神宮拝殿"}, related={"附指定": True}),
     )
 
-    assert report.missing_annexes == 1
+    assert report.missing_rellists["102 附指定"] == 1
+    assert report.has_anomalies
+
+
+def test_401の同じモーダルは附指定ではなく措置の履歴として読む() -> None:
+    """``detail_rellist_*`` の中身は分類で変わる (ADR 0012)。
+
+    ラベルで見分けないと、指定の変遷が附指定として読まれるか捨てられる。
+    """
+    record, report = build(
+        row(MONUMENTS, 名称="旧浜離宮庭園"),
+        DetailPage(
+            fields={"名称": "旧浜離宮庭園", "所在都道府県": "東京都"},
+            related={"指定等後に行った措置": True, "添付ファイル": False},
+            rellists=(
+                {
+                    "異動年月日": "1952.11.22(昭和27.11.22)",
+                    "異動種別1": "特別名勝",
+                    "異動種別2": "特別史跡",
+                    "異動種別3": "",
+                    "異動内容": "",
+                },
+            ),
+        ),
+    )
+
+    assert record["measures"] == [{"date": "1952-11-22", "types": ["特別名勝", "特別史跡"]}]
+    assert "annexes" not in record
+    assert record["has_measures"] is True
+    assert not report.missing_rellists
+    assert not report.unknown_labels
+
+
+def test_401の措置ありなのに一覧が空なら報せる() -> None:
+    _, report = build(
+        row(MONUMENTS),
+        DetailPage(fields={"名称": "旧浜離宮庭園"}, related={"指定等後に行った措置": True}),
+    )
+
+    assert report.missing_rellists["401 指定等後に行った措置"] == 1
+
+
+def test_401の指定基準はカンマで割って空を落とす() -> None:
+    """建造物系は基準を欄で分けるが、401 は 1 欄に並べる (ADR 0012)。"""
+    record, _ = build(
+        row(MONUMENTS),
+        DetailPage(fields={"名称": "浦富海岸", "指定基準": "五．岩石、洞穴,,（一）岩石、鉱物"}),
+    )
+
+    assert record["criteria"] == ["五．岩石、洞穴", "（一）岩石、鉱物"]
+
+
+def test_401の種別と特別指定を読む() -> None:
+    record, report = build(
+        row(MONUMENTS),
+        DetailPage(
+            fields={
+                "名称": "阿寒湖のマリモ",
+                "種別１": "特別天然記念物",
+                "特別区分": "特別",
+                "指定年月日": "1921.03.03(大正10.03.03)",
+                "特別指定年月日": "1952.03.29(昭和27.03.29)",
+                "所在地（市区町村）": "北海道釧路市阿寒町",
+            }
+        ),
+    )
+
+    assert record["types"] == ["特別天然記念物"]
+    assert record["special_class"] == "特別"
+    assert record["designation_kind"] == "指定"
+    assert record["designated_date"] == "1921-03-03"
+    assert record["special_designated_date"] == "1952-03-29"
+    assert record["address"] == "北海道釧路市阿寒町"
+    assert not report.unknown_labels
+
+
+def test_振り分けの区分は分類ごとに違うキーから採る() -> None:
+    """102 は国宝・重文区分、401 は種別 (ADR 0012)。"""
+    assert routing_kinds(DESIGNATED, {"national_treasure_class": "国宝"}) == ["国宝"]
+    assert routing_kinds(MONUMENTS, {"types": ["名勝", "天然記念物"]}) == ["名勝", "天然記念物"]
+    # 区分を持たない分類は空 (受け皿のリポジトリ 1 つへ行く)
+    assert routing_kinds(REGISTERED, {"types": ["住宅"]}) == []
+    assert routing_kinds(MONUMENTS, {}) == []
 
 
 def test_対応表に無いラベルは捨てずに数える() -> None:

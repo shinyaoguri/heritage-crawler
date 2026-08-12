@@ -39,6 +39,13 @@ class Kind(Enum):
     LIST = "list"
     """同じキーの配列へ順に足す (種別１・種別２ → types)。"""
 
+    SPLIT = "split"
+    """1 欄に詰まった複数の値を割って配列へ足す (401 の指定基準)。
+
+    建造物系は基準を ``登録基準１`` / ``登録基準２`` と欄で分けるが、401 は
+    1 つの欄に半角カンマ区切りで並べる。空要素も混じる。
+    """
+
 
 @dataclass(frozen=True)
 class Field:
@@ -52,6 +59,10 @@ def _date(key: str) -> Field:
 
 def _list(key: str) -> Field:
     return Field(key, Kind.LIST)
+
+
+def _split(key: str) -> Field:
+    return Field(key, Kind.SPLIT)
 
 
 FIELD_KEYS: Final[dict[str, Field]] = {
@@ -70,6 +81,7 @@ FIELD_KEYS: Final[dict[str, Field]] = {
     "追加年月日": _date("added_date"),
     "所在都道府県": Field("prefecture"),
     "所在地": Field("address"),
+    "所在地（市区町村）": Field("address"),
     "保管施設の名称": Field("storage_facility"),
     "所有者名": Field("owner"),
     "所有者種別": Field("owner_type"),
@@ -81,11 +93,12 @@ FIELD_KEYS: Final[dict[str, Field]] = {
     # 備考にあたる欄。102 だけ棟札の話が前に付く
     "棟礼、墨書、その他参考となるべき事項": Field("notes"),
     "その他参考となるべき事項": Field("notes"),
-    # 指定 (102) / 登録 (101) / 選定 (103) で名前が変わるもの
+    # 指定 (102 / 401) / 登録 (101) / 選定 (103) で名前が変わるもの
     "指定番号": Field("designation_number"),
     "登録番号": Field("designation_number"),
     "告示番号": Field("designation_number"),
     "重文指定年月日": _date("designated_date"),
+    "指定年月日": _date("designated_date"),
     "登録年月日": _date("designated_date"),
     "選定年月日": _date("designated_date"),
     "重文指定基準１": _list("criteria"),
@@ -95,19 +108,55 @@ FIELD_KEYS: Final[dict[str, Field]] = {
     "選定基準１": _list("criteria"),
     "選定基準２": _list("criteria"),
     "選定基準３": _list("criteria"),
+    # 401 は基準を欄で分けず、1 欄にカンマ区切りで並べる
+    "指定基準": _split("criteria"),
     # 分類に固有のもの
     "登録回": Field("registration_round"),
     "登録告示年月日": _date("announced_date"),
     "国宝・重文区分": Field("national_treasure_class"),
     "国宝指定年月日": _date("national_treasure_date"),
+    # 401 の特別指定 (特別史跡・特別名勝・特別天然記念物)
+    "特別区分": Field("special_class"),
+    "特別指定年月日": _date("special_designated_date"),
 }
 
-DESIGNATION_KINDS: Final[dict[str, str]] = {"101": "登録", "102": "指定", "103": "選定"}
+DESIGNATION_KINDS: Final[dict[str, str]] = {
+    "101": "登録",
+    "102": "指定",
+    "103": "選定",
+    "401": "指定",
+}
 """``designated_date`` が何の日付かを示す。分類から決まる。"""
 
-ANNEX_KEYS: Final[dict[str, str]] = {"附名称": "name", "附員数": "quantity"}
+ROUTING_KEYS: Final[dict[str, str]] = {
+    "102": "national_treasure_class",
+    "401": "types",
+}
+"""どの分類が、どのキーの値でデータリポジトリに振り分けられるか (ADR 0012)。
+
+ここに無い分類は区分を持たず、受け皿のリポジトリ 1 つへ行く。
+"""
+
+MEASURES_LABEL: Final = "指定等後に行った措置"
+"""関連情報の欄にある 401 固有のラベル。有無だけを ``has_measures`` に採る。"""
+
+ANNEX_KEYS: Final[dict[str, Field]] = {"附名称": Field("name"), "附員数": Field("quantity")}
 ANNEX_LABEL: Final = "附指定"
 ATTACHMENT_LABEL: Final = "添付ファイル"
+
+MEASURE_KEYS: Final[dict[str, Field]] = {
+    "異動年月日": _date("date"),
+    "異動種別1": _list("types"),
+    "異動種別2": _list("types"),
+    "異動種別3": _list("types"),
+    "異動内容": Field("note"),
+}
+"""指定等後に行った措置 1 件ぶんの対応表 (401)。
+
+**同じ ``detail_rellist_*`` モーダルが分類によって別のものを載せる。** 建造物系は
+附指定の一覧、401 は指定・追加指定・名称変更などの履歴。ラベルで見分ける
+(数字は半角。全角の ``異動種別１`` ではない)。
+"""
 
 KEY_ORDER: Final[tuple[str, ...]] = (
     "ledger_id",
@@ -131,9 +180,11 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "designation_number",
     "registration_round",
     "national_treasure_class",
+    "special_class",
     "designated_date",
     "announced_date",
     "national_treasure_date",
+    "special_designated_date",
     "added_date",
     "criteria",
     "prefecture",
@@ -147,7 +198,9 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "description",
     "detailed_description",
     "annexes",
+    "measures",
     "has_attachment",
+    "has_measures",
     "has_photo",
 )
 """JSON Lines のキーの並び。順序を固定しないと、同じ内容でも差分が出る。"""
@@ -234,9 +287,12 @@ class BuildReport:
     name_mismatches: list[str] = field(default_factory=list)
     prefecture_from_address: int = 0
     prefecture_unresolved: int = 0
-    missing_annexes: int = 0
-    missing_treasure_class: int = 0
-    """国宝・重文区分が読めず、重要文化財側のリポジトリへ送った棟 (ADR 0009)。"""
+    missing_rellists: Counter[str] = field(default_factory=Counter)
+    """関連情報に「あり」と出ているのに、一覧が読めなかったもの (附指定 / 措置)。"""
+    missing_kind: int = 0
+    """区分が読めず、受け皿のリポジトリへ送った件数 (102 なら重要文化財側。ADR 0009)。"""
+    unroutable: list[str] = field(default_factory=list)
+    """種別が読めず、どのリポジトリへも書けなかったもの (401 に受け皿は無い。ADR 0012)。"""
     files: list[str] = field(default_factory=list)
     stale_files: list[str] = field(default_factory=list)
 
@@ -247,9 +303,10 @@ class BuildReport:
             or self.unknown_labels
             or self.invalid_dates
             or self.name_mismatches
-            or self.missing_annexes
+            or self.missing_rellists
             or self.prefecture_unresolved
-            or self.missing_treasure_class
+            or self.missing_kind
+            or self.unroutable
         )
 
 
@@ -283,6 +340,8 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
             continue
         if mapped.kind is Kind.LIST:
             values.setdefault(mapped.key, []).append(raw)
+        elif mapped.kind is Kind.SPLIT:
+            values.setdefault(mapped.key, []).extend(_split_values(raw))
         elif mapped.kind is Kind.DATE:
             if (normalized := normalize_date(raw)) is None:
                 report.invalid_dates[f"{label}: {raw}"] += 1
@@ -304,10 +363,14 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
 
     _set_or_drop(values, "description", page.description)
     _set_or_drop(values, "detailed_description", page.detailed_description)
-    _set_or_drop(values, "annexes", _annexes(page, category, report))
+    annexes, measures = _rellists(page, category, report)
+    _set_or_drop(values, "annexes", annexes)
+    _set_or_drop(values, "measures", measures)
     for label, present in page.related.items():
         if label == ATTACHMENT_LABEL:
             values["has_attachment"] = present
+        elif label == MEASURES_LABEL:
+            values["has_measures"] = present
         elif label != ANNEX_LABEL:
             report.unknown_labels[f"{category.code} 関連情報:{label}"] += 1
     values["has_photo"] = page.has_photo
@@ -327,6 +390,42 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         record={key: values[key] for key in KEY_ORDER if key in values},
         location=location,
     )
+
+
+def _split_values(raw: str) -> list[str]:
+    """カンマ区切りの 1 欄を配列にする。空要素は落とす (ADR 0012)。
+
+    401 の指定基準は該当しない番号ぶんが空で埋まっており、そのまま配列にすると
+    空文字が並ぶ。基準の文言そのものの区切りは読点 (、) なので割られない。
+
+    >>> _split_values("（一）名木、巨樹,,,,二．都城跡、国郡庁跡")
+    ['（一）名木、巨樹', '二．都城跡、国郡庁跡']
+    >>> _split_values("")
+    []
+    """
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def routing_kinds(category: Category, record: dict[str, Any]) -> list[str]:
+    """1 件をデータリポジトリへ振り分けるための区分を、レコードから取り出す。
+
+    どのキーを見るかは分類で違い、それはスキーマの知識なのでここに置く
+    (``catalog`` は取り出した値だけを受け取る)。区分を持たない分類では空になり、
+    受け皿のリポジトリへ行く。
+
+    >>> from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED
+    >>> routing_kinds(DESIGNATED, {"national_treasure_class": "国宝"})
+    ['国宝']
+    >>> routing_kinds(MONUMENTS, {"types": ["特別名勝", "特別史跡"]})
+    ['特別名勝', '特別史跡']
+    >>> routing_kinds(REGISTERED, {"types": ["住宅"]})
+    []
+    """
+    key = ROUTING_KEYS.get(category.code)
+    if key is None:
+        return []
+    value = record.get(key, [])
+    return [value] if isinstance(value, str) else list(value)
 
 
 def _squeezed(name: str) -> str:
@@ -359,20 +458,48 @@ def _coordinate(raw: str) -> float | None:
         return None
 
 
-def _annexes(page: DetailPage, category: Category, report: BuildReport) -> list[dict[str, str]]:
-    annexes = []
-    for raw in page.annexes:
-        annex = {}
-        for label, value in raw.items():
-            key = ANNEX_KEYS.get(label)
-            if key is None:
-                report.unknown_labels[f"{category.code} 附指定:{label}"] += 1
-                continue
-            if value:
-                annex[key] = value
-        if annex:
-            annexes.append(annex)
-    if page.related.get(ANNEX_LABEL) and not annexes:
-        # 「附指定あり」と書いてあるのに一覧が読めていない。取りこぼしを疑う。
-        report.missing_annexes += 1
-    return annexes
+def _rellists(
+    page: DetailPage, category: Category, report: BuildReport
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """``detail_rellist_*`` モーダルを附指定と措置に振り分ける (附指定, 措置)。
+
+    分類ではなくラベルで見分ける。同じモーダルが建造物系では附指定の一覧、
+    401 では指定等後に行った措置の履歴になっているため。
+    """
+    annexes: list[dict[str, Any]] = []
+    measures: list[dict[str, Any]] = []
+    for raw in page.rellists:
+        is_measure = bool(raw.keys() & MEASURE_KEYS.keys())
+        keys = MEASURE_KEYS if is_measure else ANNEX_KEYS
+        target = measures if is_measure else annexes
+        if entry := _rellist_entry(raw, keys, category, report):
+            target.append(entry)
+
+    for label, entries in ((ANNEX_LABEL, annexes), (MEASURES_LABEL, measures)):
+        if page.related.get(label) and not entries:
+            # 「あり」と書いてあるのに一覧が読めていない。取りこぼしを疑う。
+            report.missing_rellists[f"{category.code} {label}"] += 1
+    return annexes, measures
+
+
+def _rellist_entry(
+    raw: dict[str, str], keys: dict[str, Field], category: Category, report: BuildReport
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {}
+    for label, value in raw.items():
+        mapped = keys.get(label)
+        if mapped is None:
+            report.unknown_labels[f"{category.code} 一覧:{label}"] += 1
+            continue
+        if not value:
+            continue
+        if mapped.kind is Kind.LIST:
+            entry.setdefault(mapped.key, []).append(value)
+        elif mapped.kind is Kind.DATE:
+            if (normalized := normalize_date(value)) is None:
+                report.invalid_dates[f"{label}: {value}"] += 1
+            else:
+                entry[mapped.key] = normalized
+        else:
+            entry[mapped.key] = value
+    return entry
