@@ -217,6 +217,22 @@ pytest -q
 ./scripts/check-freshness.sh
 ```
 
+**CI からデータベースへはアクセスしない。** 外部サイトに依存するテストは不安定な
+うえ、相手先に不要な負荷をかける。唯一の例外が疎通確認
+(`.github/workflows/reachability.yml`) で、これは手で押したときだけ走る。
+
+```bash
+gh workflow run reachability.yml
+```
+
+差分更新は GitHub Actions の月次実行で回す
+([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md)) が、
+データセンター IP から取得できるかは相手先の WAF 次第で読めない。月次更新が使う
+3 経路 — 台帳の CSV (CSRF + セッション)・検索結果一覧のページ送り・詳細ページ —
+を既定で 126 件の分類 103 に対して通し、取れることを確かめる。**200 で返る
+エラーページは取得層が弾いて失敗にする**ので、差し替えられていれば赤くなる
+([ADR 0011](docs/decisions/0011-back-off-to-1-rps-and-detect-error-pages.md))。
+
 設計判断は `docs/decisions/` の ADR に、進行状況と残る論点は
 [Issue #1](https://github.com/shinyaoguri/heritage-crawler/issues/1) に記録している。
 
