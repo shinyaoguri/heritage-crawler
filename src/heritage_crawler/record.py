@@ -128,6 +128,7 @@ DESIGNATION_KINDS: Final[dict[str, str]] = {
 }
 """``designated_date`` が何の日付かを示す。分類から決まる。"""
 
+
 ROUTING_KEYS: Final[dict[str, str]] = {
     "102": "national_treasure_class",
     "401": "types",
@@ -157,6 +158,55 @@ MEASURE_KEYS: Final[dict[str, Field]] = {
 附指定の一覧、401 は指定・追加指定・名称変更などの履歴。ラベルで見分ける
 (数字は半角。全角の ``異動種別１`` ではない)。
 """
+
+DERIVED_LABELS: Final[dict[str, str]] = {
+    "ledger_id": "台帳ID",
+    "managed_id": "管理対象ID",
+    "category_name": "分類",
+    "url": "詳細ページ",
+    "designation_kind": "指定・登録・選定の別",
+    "prefecture": "所在都道府県",
+    "latitude": "緯度",
+    "longitude": "経度",
+    "description": "解説文",
+    "detailed_description": "詳細解説",
+    "annexes": ANNEX_LABEL,
+    "measures": MEASURES_LABEL,
+    "has_attachment": f"{ATTACHMENT_LABEL}の有無",
+    "has_measures": f"{MEASURES_LABEL}の有無",
+    "has_photo": "写真の有無",
+}
+"""原文ラベルを持たないキーの表示名。
+
+``FIELD_KEYS`` の対応表から来ないもの — CSV 由来 (緯度経度)、モーダル由来
+(解説文・附指定)、こちらで組み立てたもの (URL・分類) の呼び名をここで決める。
+**表示名もスキーマの知識なのでここが正本**にする。持たせないと、データを読む側が
+それぞれ独自の和訳を抱えることになり、原文の表記が変わっても追随できない
+(ADR 0014)。
+
+原文にも同じ欄があるキー (所在都道府県) も置いてある。分類によっては欄が無く、
+こちらで所在地から決めるため — 103 の詳細ページに所在都道府県の欄は無い。
+**原文のラベルがあればそちらが優先**で、ここは無かったときの控えになる。
+"""
+
+_LABEL_INDEX_RE: Final = re.compile(r"[0-9０-９]+$")
+
+
+def display_label(label: str) -> str:
+    """原文ラベルを表示名にする。番号で分かれた欄は番号を落として 1 つに畳む。
+
+    同じキーへ寄る欄は番号だけが違うことが多い (種別１ / 種別２ → types)。
+    畳まないと、どちらの番号が表示名になるかが読み取り順で決まってしまう。
+
+    >>> display_label("種別１")
+    '種別'
+    >>> display_label("重文指定基準２")
+    '重文指定基準'
+    >>> display_label("名称")
+    '名称'
+    """
+    return _LABEL_INDEX_RE.sub("", label) or label
+
 
 KEY_ORDER: Final[tuple[str, ...]] = (
     "ledger_id",
@@ -316,6 +366,14 @@ class Built:
 
     record: dict[str, Any]
     location: Location
+    labels: dict[str, str] = field(default_factory=dict)
+    """このレコードで実際に使われた ``キー → 表示名``。
+
+    どの原文ラベルが現れるかは分類で違い、対応表からは決まらない (同じキーに
+    複数の原文ラベルが寄っている)。データセットのメタデータに載せる表示名は
+    実測するしかないので、組み立てながら拾う (ADR 0014)。
+    附指定・措置の中のキーは ``annexes.name`` のように親のキーで修飾する。
+    """
 
 
 def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built:
@@ -332,6 +390,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         "url": detail_url(row.get("台帳ID"), row.get("管理対象ID")),
         "designation_kind": DESIGNATION_KINDS[category.code],
     }
+    labels: dict[str, str] = {}
 
     for label, raw in page.fields.items():
         mapped = FIELD_KEYS.get(label)
@@ -345,10 +404,11 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         elif mapped.kind is Kind.DATE:
             if (normalized := normalize_date(raw)) is None:
                 report.invalid_dates[f"{label}: {raw}"] += 1
-            else:
-                values[mapped.key] = normalized
+                continue
+            values[mapped.key] = normalized
         else:
             values[mapped.key] = raw
+        labels[mapped.key] = display_label(label)
 
     location = resolve_location(values.get("prefecture", ""), values.get("address", ""))
     _set_or_drop(values, "prefecture", location.prefecture)
@@ -363,7 +423,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
 
     _set_or_drop(values, "description", page.description)
     _set_or_drop(values, "detailed_description", page.detailed_description)
-    annexes, measures = _rellists(page, category, report)
+    annexes, measures = _rellists(page, category, report, labels)
     _set_or_drop(values, "annexes", annexes)
     _set_or_drop(values, "measures", measures)
     for label, present in page.related.items():
@@ -386,10 +446,11 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
     unknown = set(values) - set(KEY_ORDER)
     if unknown:  # pragma: no cover - KEY_ORDER の付け忘れを実行時に落とすための保険
         raise ValueError(f"KEY_ORDER に無いキーを作った: {sorted(unknown)}")
-    return Built(
-        record={key: values[key] for key in KEY_ORDER if key in values},
-        location=location,
-    )
+    record = {key: values[key] for key in KEY_ORDER if key in values}
+    for key in record.keys() & DERIVED_LABELS.keys():
+        # 原文にラベルがあればそちらを優先する。ここは無かったときの控え。
+        labels.setdefault(key, DERIVED_LABELS[key])
+    return Built(record=record, location=location, labels=labels)
 
 
 def _split_values(raw: str) -> list[str]:
@@ -459,7 +520,7 @@ def _coordinate(raw: str) -> float | None:
 
 
 def _rellists(
-    page: DetailPage, category: Category, report: BuildReport
+    page: DetailPage, category: Category, report: BuildReport, labels: dict[str, str]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """``detail_rellist_*`` モーダルを附指定と措置に振り分ける (附指定, 措置)。
 
@@ -472,7 +533,8 @@ def _rellists(
         is_measure = bool(raw.keys() & MEASURE_KEYS.keys())
         keys = MEASURE_KEYS if is_measure else ANNEX_KEYS
         target = measures if is_measure else annexes
-        if entry := _rellist_entry(raw, keys, category, report):
+        prefix = "measures" if is_measure else "annexes"
+        if entry := _rellist_entry(raw, keys, category, report, labels, prefix):
             target.append(entry)
 
     for label, entries in ((ANNEX_LABEL, annexes), (MEASURES_LABEL, measures)):
@@ -483,7 +545,12 @@ def _rellists(
 
 
 def _rellist_entry(
-    raw: dict[str, str], keys: dict[str, Field], category: Category, report: BuildReport
+    raw: dict[str, str],
+    keys: dict[str, Field],
+    category: Category,
+    report: BuildReport,
+    labels: dict[str, str],
+    prefix: str,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {}
     for label, value in raw.items():
@@ -498,8 +565,9 @@ def _rellist_entry(
         elif mapped.kind is Kind.DATE:
             if (normalized := normalize_date(value)) is None:
                 report.invalid_dates[f"{label}: {value}"] += 1
-            else:
-                entry[mapped.key] = normalized
+                continue
+            entry[mapped.key] = normalized
         else:
             entry[mapped.key] = value
+        labels[f"{prefix}.{mapped.key}"] = display_label(label)
     return entry

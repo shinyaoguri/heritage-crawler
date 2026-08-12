@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write
+from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write, detail_key
 from heritage_crawler.catalog import (
     KIND_SPLIT_CATEGORIES,
     SEARCH_AREAS,
@@ -30,6 +30,12 @@ from heritage_crawler.catalog import (
 )
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
 from heritage_crawler.ledger import read_ledger_rows
+from heritage_crawler.metadata import (
+    build_metadata,
+    generator_version,
+    metadata_path,
+    write_metadata,
+)
 from heritage_crawler.record import BuildReport, build_record, routing_kinds
 
 logger = logging.getLogger(__name__)
@@ -52,6 +58,8 @@ def build_dataset(
     """
     report = BuildReport()
     groups: dict[tuple[Dataset, Area], list[dict[str, Any]]] = defaultdict(list)
+    labels: dict[Dataset, dict[str, str]] = defaultdict(dict)
+    latest_fetch: dict[Dataset, str] = defaultdict(str)
     seen: set[str] = set()
 
     for row in read_ledger_rows(ledger_cache, categories, areas):
@@ -61,16 +69,21 @@ def build_dataset(
         seen.add(row.key)
         report.total += 1
 
-        page = _read_page(detail_cache, row.get("台帳ID"), row.get("管理対象ID"), report)
+        ledger_id, managed_id = row.get("台帳ID"), row.get("管理対象ID")
+        page = _read_page(detail_cache, ledger_id, managed_id, report)
         if page is None:
             continue
         built = build_record(row, page, report)
+        fetched_at = _fetched_at(detail_cache, ledger_id, managed_id)
         for dataset in _datasets_of(row.category, built.record, report):
             groups[(dataset, built.location.area)].append(built.record)
+            labels[dataset].update(built.labels)
+            latest_fetch[dataset] = max(latest_fetch[dataset], fetched_at)
         report.built += 1
         if report.built % PROGRESS_EVERY == 0:
             logger.info("%d 件組み立てた", report.built)
 
+    written: dict[Dataset, list[tuple[Area, list[dict[str, Any]]]]] = defaultdict(list)
     for (dataset, area), records in sorted(groups.items(), key=lambda item: _group_order(item[0])):
         path = output_path(output_dir, dataset, area)
         records.sort(key=lambda record: (record["ledger_id"], record["managed_id"]))
@@ -78,6 +91,14 @@ def build_dataset(
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, lines.encode("utf-8"))
         report.files.append(f"{path} ({len(records):,} 行)")
+        written[dataset].append((area, records))
+
+    version = generator_version()
+    for dataset, entries in written.items():
+        path = metadata_path(output_dir, dataset)
+        payload = build_metadata(dataset, entries, labels[dataset], latest_fetch[dataset], version)
+        write_metadata(path, payload)
+        report.files.append(f"{path} (利用日 {payload['source']['accessed_date']})")
 
     _note_stale_files(output_dir, categories, groups, report)
     return report
@@ -109,6 +130,16 @@ def _datasets_of(
             f"{record['ledger_id']}/{record['managed_id']} {record.get('name', '')}"
         )
     return datasets
+
+
+def _fetched_at(cache: DetailCache, ledger_id: str, managed_id: str) -> str:
+    """この 1 件を取得した日時 (ISO 8601 の UTC)。記録が無ければ空。
+
+    出典表記の利用日はここから決まる (ADR 0014)。**取得の記録が唯一の実測値**で、
+    組み立てを走らせた日時では代用できない。
+    """
+    entry = cache.entries.get(detail_key(ledger_id, managed_id))
+    return entry.fetched_at if entry else ""
 
 
 def _read_page(
