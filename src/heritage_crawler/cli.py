@@ -62,6 +62,7 @@ from heritage_crawler.listing import (
     recover_missing,
 )
 from heritage_crawler.metadata import JST
+from heritage_crawler.readme import ReadmeError, read_counts, render_block, replace_block
 from heritage_crawler.search_page import ParseError
 from heritage_crawler.update import (
     ROTATION_MONTHS,
@@ -80,6 +81,8 @@ MAX_CONCURRENCY: Final = 8
 これ以上増やしても速くならず、相手側の同時接続だけが増える。
 既定の間隔 1 秒では 1 本で足りる。
 """
+
+DEFAULT_README: Final = Path("README.md")
 
 DEFAULT_CONCURRENCY: Final = 1
 """詳細ページ取得の既定の並列度。
@@ -241,6 +244,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="計画だけを出す (相手先へは一切アクセスせず、出力も書き換えない)",
     )
+
+    render = subparsers.add_parser(
+        "render-readme",
+        help="README の件数表を書き出したデータから作り直す",
+        description="散文に写した件数は新規指定・解除のたびに嘘になるので生成する (Issue #37)。",
+    )
+    _output_dir_option(render)
+    render.add_argument(
+        "--readme", type=Path, default=DEFAULT_README, help=f"書き換える先 (既定: {DEFAULT_README})"
+    )
+    render.add_argument(
+        "--check",
+        action="store_true",
+        help="書き換えず、ずれていれば異常終了する (あるべき表を出力する)",
+    )
     return parser
 
 
@@ -284,6 +302,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_build(args, ledger_cache, categories, areas)
     if args.command == "update-records":
         return _run_update(args, ledger_cache, categories, areas)
+    if args.command == "render-readme":
+        return _run_render_readme(args)
     return _run_detail(args, ledger_cache, categories, areas)
 
 
@@ -478,6 +498,35 @@ def _run_update(
         reuse=reuse_for(plan, existing, now.isoformat(timespec="seconds")),
     )
     print(format_report(report))
+    return 0
+
+
+def _run_render_readme(args: argparse.Namespace) -> int:
+    """外部へも相手先へも出ない。書き出し済みのデータと README だけを読む。
+
+    ``--check`` であるべき表を出力するのは、月次のドリフト検知が結果をそのまま
+    Issue に載せられるようにするため (``.github/workflows/monthly.yml``)。
+    """
+    try:
+        block = render_block(read_counts(args.output_dir))
+        current = args.readme.read_text(encoding="utf-8")
+        updated = replace_block(current, block)
+    except (ReadmeError, OSError) as error:
+        logger.error("%s", error)
+        return 1
+
+    if updated == current:
+        print(f"{args.readme} の件数表はデータと一致している")
+        return 0
+    if args.check:
+        print(block)
+        logger.error(
+            "%s の件数表がデータとずれている。heritage-crawler render-readme で作り直す",
+            args.readme,
+        )
+        return 1
+    args.readme.write_text(updated, encoding="utf-8")
+    print(f"{args.readme} の件数表を書き直した")
     return 0
 
 

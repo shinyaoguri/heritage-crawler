@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from conftest import area_named, fixture, put_detail, put_ledger
 from heritage_crawler.cache import DetailCache, LedgerCache
-from heritage_crawler.catalog import SELECTED
+from heritage_crawler.catalog import SELECTED, TARGET_DATASETS
 from heritage_crawler.cli import build_parser, main
+from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
 
 
 def test_サブコマンドの指定は必須() -> None:
@@ -163,3 +165,70 @@ def test_差分更新のドライランは何も書き換えない(
     assert {path: path.read_bytes() for path in sorted(out.rglob("*")) if path.is_file()} == before
     printed = capsys.readouterr().out
     assert "前回の出力 1 件 / 巡回の枠 1/12" in printed
+
+
+def render_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """`render-readme` を試すための、データ 1 件と差し込み口だけの README。"""
+    out = tmp_path / "data"
+    for dataset in TARGET_DATASETS:
+        keys = [{"ledger_id": "103", "managed_id": "16"}] if dataset.category is SELECTED else []
+        (out / dataset.repo / "data").mkdir(parents=True)
+        (out / dataset.repo / "data" / "26_kyoto.jsonl").write_text(
+            "".join(json.dumps(key) + "\n" for key in keys), encoding="utf-8"
+        )
+        (out / dataset.repo / "meta.json").write_text(
+            json.dumps({"counts": {"records": len(keys)}}), encoding="utf-8"
+        )
+    readme = tmp_path / "README.md"
+    readme.write_text(f"前書き\n\n{BEGIN_MARKER}\n{END_MARKER}\n\n後書き\n", encoding="utf-8")
+    return out, readme
+
+
+def test_件数表を書き直す(tmp_path: Path) -> None:
+    out, readme = render_fixture(tmp_path)
+
+    status = main(["render-readme", "--output-dir", str(out), "--readme", str(readme)])
+
+    assert status == 0
+    text = readme.read_text(encoding="utf-8")
+    assert "| 103 | 重要伝統的建造物群保存地区 | 選定 | 126 | 1 | 1 |" in text
+    assert text.startswith("前書き\n\n")
+    assert text.endswith("\n\n後書き\n")
+
+
+def test_ずれていれば_check_は異常終了する(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """月次はここで気付く。あるべき表を出して、そのまま Issue に載せられるようにする。"""
+    out, readme = render_fixture(tmp_path)
+
+    status = main(["render-readme", "--output-dir", str(out), "--readme", str(readme), "--check"])
+
+    assert status == 1
+    assert "| **計** |" in capsys.readouterr().out
+    assert BEGIN_MARKER in readme.read_text(encoding="utf-8")
+    assert "103" not in readme.read_text(encoding="utf-8")
+
+
+def test_一致していれば_check_は通る(tmp_path: Path) -> None:
+    out, readme = render_fixture(tmp_path)
+    assert main(["render-readme", "--output-dir", str(out), "--readme", str(readme)]) == 0
+
+    status = main(["render-readme", "--output-dir", str(out), "--readme", str(readme), "--check"])
+
+    assert status == 0
+
+
+def test_データが半端なら書き換えない(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """meta.json の申告と行数が食い違う状態から README を作らない。"""
+    out, readme = render_fixture(tmp_path)
+    before = readme.read_text(encoding="utf-8")
+    (out / "historic-sites" / "meta.json").write_text(
+        json.dumps({"counts": {"records": 3}}), encoding="utf-8"
+    )
+
+    status = main(["render-readme", "--output-dir", str(out), "--readme", str(readme)])
+
+    assert status == 1
+    assert readme.read_text(encoding="utf-8") == before
+    assert "食い違う" in caplog.text
