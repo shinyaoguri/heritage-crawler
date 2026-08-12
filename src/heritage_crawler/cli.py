@@ -16,11 +16,18 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 from heritage_crawler.cache import DEFAULT_CACHE_DIR, DetailCache, LedgerCache, detail_key
-from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES, Area, Category
+from heritage_crawler.catalog import (
+    SEARCH_AREAS,
+    TARGET_CATEGORIES,
+    Area,
+    Category,
+    datasets_for,
+)
 from heritage_crawler.detail import (
     DetailError,
     Target,
@@ -44,6 +51,7 @@ from heritage_crawler.ledger import (
     Session,
     fetch_ledgers,
     format_summary,
+    read_ledger_rows,
     summarize,
 )
 from heritage_crawler.listing import (
@@ -53,7 +61,16 @@ from heritage_crawler.listing import (
     format_audits,
     recover_missing,
 )
+from heritage_crawler.metadata import JST
 from heritage_crawler.search_page import ParseError
+from heritage_crawler.update import (
+    ROTATION_MONTHS,
+    UpdateError,
+    format_plan,
+    plan_update,
+    read_existing,
+    reuse_for,
+)
 
 CONTACT_ENV: Final = "HERITAGE_CRAWLER_CONTACT"
 MAX_CONCURRENCY: Final = 8
@@ -131,6 +148,26 @@ def _concurrency(value: str) -> int:
     return number
 
 
+def _concurrency_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--concurrency",
+        type=_concurrency,
+        default=DEFAULT_CONCURRENCY,
+        help=f"同時に投げる本数 (既定: {DEFAULT_CONCURRENCY}、最大 {MAX_CONCURRENCY})。"
+        "レートの上限は間隔が決めるので、増やしても超えない",
+    )
+
+
+def _output_dir_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="データリポジトリを並べた親ディレクトリ (既定: "
+        f"{DEFAULT_OUTPUT_DIR})。配下に <リポジトリ名>/data/ を作る (ADR 0009)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="heritage-crawler",
@@ -162,13 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     detail = subparsers.add_parser("fetch-detail", help="台帳の各行から詳細ページを取得する")
     _target_options(detail)
     _access_options(detail)
-    detail.add_argument(
-        "--concurrency",
-        type=_concurrency,
-        default=DEFAULT_CONCURRENCY,
-        help=f"同時に投げる本数 (既定: {DEFAULT_CONCURRENCY}、最大 {MAX_CONCURRENCY})。"
-        "レートの上限は間隔が決めるので、増やしても超えない",
-    )
+    _concurrency_option(detail)
     detail.add_argument(
         "--limit", type=int, help="先頭から指定件数だけ取る (疎通確認や様子見に使う)"
     )
@@ -189,14 +220,35 @@ def build_parser() -> argparse.ArgumentParser:
         "build-records", help="キャッシュから都道府県ごとの JSON Lines を組み立てる"
     )
     _target_options(build)
-    build.add_argument(
-        "--output-dir",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help="データリポジトリを並べた親ディレクトリ (既定: "
-        f"{DEFAULT_OUTPUT_DIR})。配下に <リポジトリ名>/data/ を作る (ADR 0009)",
+    _output_dir_option(build)
+
+    update = subparsers.add_parser(
+        "update-records",
+        help="前回の出力と台帳を突き合わせ、差分だけ取り直して書き直す (ADR 0018)",
+        description="月次の差分更新。先に fetch-ledger で台帳を取り直しておく。",
+    )
+    _target_options(update)
+    _access_options(update, resumable=False)
+    _concurrency_option(update)
+    _output_dir_option(update)
+    update.add_argument(
+        "--month",
+        type=_month,
+        help="巡回の枠に使う月 (既定: 実行月)。全体の 1/12 を毎月取り直す",
+    )
+    update.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="計画だけを出す (相手先へは一切アクセスせず、出力も書き換えない)",
     )
     return parser
+
+
+def _month(value: str) -> int:
+    number = int(value)
+    if not 1 <= number <= ROTATION_MONTHS:
+        raise argparse.ArgumentTypeError(f"月は 1〜{ROTATION_MONTHS} にする")
+    return number
 
 
 def _selected[Item: (Category, Area)](
@@ -230,6 +282,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_audit(args, ledger_cache, categories, areas)
     if args.command == "build-records":
         return _run_build(args, ledger_cache, categories, areas)
+    if args.command == "update-records":
+        return _run_update(args, ledger_cache, categories, areas)
     return _run_detail(args, ledger_cache, categories, areas)
 
 
@@ -334,6 +388,96 @@ def _run_build(
         logger.error("台帳が空。先に heritage-crawler fetch-ledger を実行する")
         return 1
     # 異常があっても書き出したものは残す。捨てずに報告して、直すかどうかは人が決める。
+    return 0
+
+
+def _run_update(
+    args: argparse.Namespace,
+    ledger_cache: LedgerCache,
+    categories: Sequence[Category],
+    areas: Sequence[Area],
+) -> int:
+    """月次の差分更新 (ADR 0018)。
+
+    台帳は先に ``fetch-ledger`` で取り直しておく。ここは「前回の出力と突き合わせ、
+    取り直すぶんだけ取って書き直す」ところだけを受け持つ。
+    """
+    summaries = summarize(ledger_cache, categories, areas)
+    if not any(summary.unique_key_count for summary in summaries):
+        logger.error("台帳が空。先に heritage-crawler fetch-ledger を実行する")
+        return 1
+    print(format_summary(summaries))
+
+    try:
+        existing = read_existing(args.output_dir, datasets_for(categories))
+    except UpdateError as error:
+        logger.error("%s", error)
+        return 1
+    if not existing.records:
+        logger.error(
+            "前回の出力が %s に無い。差分の基準が無いので build-records で全件を組み立てる",
+            args.output_dir,
+        )
+        return 1
+
+    now = datetime.now(UTC)
+    month = args.month or now.astimezone(JST).month
+    plan = plan_update(
+        existing,
+        read_ledger_rows(ledger_cache, categories, areas),
+        slot=month - 1,
+        complete_categories={
+            summary.category.code for summary in summaries if summary.looks_complete
+        },
+    )
+    print(format_plan(plan, existing))
+    for summary in summaries:
+        if not summary.looks_complete:
+            logger.warning(
+                "%s は網羅性を確かめられない (%s)。消えた指定を落とさずに進める",
+                summary.category.code,
+                summary.note,
+            )
+    if args.dry_run:
+        logger.info("--dry-run なので取得も書き出しもしない")
+        return 0
+    if plan.is_empty:
+        logger.info("取り直すものも落とすものも無い")
+
+    detail_cache = DetailCache(args.cache_dir)
+    if plan.targets:
+        # 取り直すと決めたぶんは、キャッシュに残っていても取り直す (それが目的)。
+        limiter = RateLimiter(args.interval)
+        fetchers = [
+            PoliteClient(contact=args.contact, timeout=args.timeout, limiter=limiter)
+            for _ in range(args.concurrency)
+        ]
+        try:
+            fetch_details(fetchers, detail_cache, plan.targets, force=True)
+        except KeyboardInterrupt:
+            logger.warning("中断した。書き出していないので、同じコマンドでやり直せる")
+            return 130
+        except (FetchError, DetailError, LedgerError) as error:
+            logger.error("%s", error)
+            return 1
+        # 取り直したぶんの結果だけを見る (失敗は前回の行が残るので、行は消えない)。
+        wanted = {target.key for target in plan.targets}
+        failures = [
+            entry
+            for entry in detail_cache.failures()
+            if detail_key(entry.daichou_id, entry.kanri_taishou_id) in wanted
+        ]
+        print(format_detail_summary(summarize_details(detail_cache, plan.targets), failures))
+
+    report = build_dataset(
+        ledger_cache,
+        detail_cache,
+        categories,
+        areas,
+        args.output_dir,
+        reuse=reuse_for(plan, existing, now.isoformat(timespec="seconds")),
+    )
+    print(format_report(report))
     return 0
 
 
