@@ -3,15 +3,32 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from conftest import area_named, fixture, put_detail, put_ledger
 from heritage_crawler.cache import DetailCache, LedgerCache
-from heritage_crawler.catalog import SELECTED, TARGET_DATASETS
+from heritage_crawler.catalog import (
+    SEARCH_AREAS,
+    SELECTED,
+    TARGET_CATEGORIES,
+    TARGET_DATASETS,
+)
 from heritage_crawler.cli import build_parser, main
 from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
+
+
+def _help_of(command: str, capsys: pytest.CaptureFixture[str]) -> str:
+    """サブコマンドの ``--help`` を 1 行に均して返す。
+
+    argparse は端末幅で折り返す。行の切れ目に振り回されないよう空白を畳んでから
+    比べる (幅の狭い端末で落ちるテストは、直す気を失わせるだけで何も守らない)。
+    """
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([command, "--help"])
+    return " ".join(capsys.readouterr().out.split())
 
 
 def test_サブコマンドの指定は必須() -> None:
@@ -28,6 +45,29 @@ def test_知らない地域名は受け付けない() -> None:
     """表記が 1 文字ずれると 0 件になり、静かに取りこぼす。"""
     with pytest.raises(SystemExit):
         build_parser().parse_args(["fetch-ledger", "--area", "北海道県"])
+
+
+def test_分類のヘルプが語彙と食い違わない(capsys: pytest.CaptureFixture[str]) -> None:
+    """ヘルプの既定に分類コードを直書きすると、分類が増えた月に嘘になる。
+
+    実際 401 を加えたとき (#27) に「既定: 101 102 103」が取り残された (#38)。
+    見るのは選択肢の列挙ではなく**既定の記述**。選択肢は argparse が語彙から
+    出すので初めからずれない。
+    """
+    stated = re.search(r"分類コード \(既定: ([^)]+)\)", _help_of("fetch-ledger", capsys))
+    assert stated is not None, "ヘルプの書式が変わった。テストの読み取りを合わせる"
+    assert stated.group(1).split() == [category.code for category in TARGET_CATEGORIES]
+
+
+def test_地域のヘルプが語彙と食い違わない(capsys: pytest.CaptureFixture[str]) -> None:
+    """未正規化の受け皿 (IRREGULAR_AREAS) まで数に入っているか。
+
+    地域は 51 個あって選択肢を出せない (metavar で伏せている) ぶん、ヘルプの
+    数が実態より小さいと、取りに行っている地域を黙って隠すことになる。
+    """
+    stated = re.search(r"地域名 \(既定: 全 (\d+) 地域", _help_of("fetch-ledger", capsys))
+    assert stated is not None, "ヘルプの書式が変わった。テストの読み取りを合わせる"
+    assert int(stated.group(1)) == len(SEARCH_AREAS)
 
 
 def test_既定のレート上限は_1_req_s() -> None:
