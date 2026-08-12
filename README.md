@@ -3,11 +3,48 @@
 [国指定文化財等データベース](https://kunishitei.bunka.go.jp/bsys/index) (文化庁) から
 建造物に関連したデータを抽出し、JSON Lines として記録するクローラー。
 
-対象は文化財分類コード 101 (登録有形文化財)・102 (国宝・重要文化財)・
-103 (重要伝統的建造物群保存地区)。抽出したデータの出力先は文化財の種別ごとの
-別リポジトリで、このリポジトリはクローラー本体のみを持つ
+抽出したデータの出力先は文化財の種別ごとの別リポジトリで、このリポジトリは
+クローラー本体のみを持つ
 ([ADR 0001](docs/decisions/0001-split-repositories-by-heritage-type.md) /
 [ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))。
+
+## 対象の文化財種別
+
+建造物に関連する 3 つの文化財分類を取る。分類コードは検索フォームの
+`register_sub_id` かつ CSV の台帳ID で、取得の単位でもある
+(定義は `src/heritage_crawler/catalog.py` の `BUILDING_CATEGORIES` が正本)。
+
+| 分類コード | 文化財種別 | 指定行為 | 指定件数 | 棟数 |
+|---|---|---|---|---|
+| 101 | 登録有形文化財（建造物） | 登録 | 14,748 | 14,748 |
+| 102 | 国宝・重要文化財（建造物） | 指定 | 2,633 | 5,587 |
+| 103 | 重要伝統的建造物群保存地区 | 選定 | 126 | 126 |
+| **計** | | | **17,507** | **20,461** |
+
+- **指定件数と棟数は単位が違う。** 検索結果の件数表示は指定単位、CSV の行数と
+  出力レコードは棟単位で、101 と 103 は 1:1、102 は 1 指定あたり約 2.5 棟になる。
+  網羅性の判定に使えるのは指定件数だけ (`report-ledger` が突き合わせる)
+- 指定行為の呼び方は分類から決まり、`designation_kind` として出力に載る
+  (実装は `src/heritage_crawler/record.py` の `DESIGNATION_KINDS`)
+- 指定件数は 2026-08-11、棟数は初回の全件取得を完走した 2026-08-12 時点の実測。
+  新規指定・解除で増減するため、厳密一致の検査ではなく欠損の目安に使う
+- 建造物以外の分類 (史跡・名勝・天然記念物など) は対象外。世界遺産 (901) も
+  建造物とは別軸の指定なので含めない
+
+出力先のリポジトリは分類と 1:1 ではない。102 だけが詳細ページの「国宝・重文区分」で
+2 つに分かれる (定義は `src/heritage_crawler/catalog.py` の `BUILDING_DATASETS` が正本、
+根拠は [ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))。
+
+| リポジトリ | 取得対象 | 棟数 |
+|---|---|---|
+| `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） | 14,748 |
+| `national-treasures` | 102 のうち国宝 | 303 |
+| `important-cultural-properties` | 102 の残り (重要文化財) | 5,284 |
+| `important-preservation-districts-for-groups-of-traditional-buildings` | 103 重要伝統的建造物群保存地区 | 126 |
+
+国宝は重要文化財のうちから指定されるが、リポジトリには排他に振り分ける。
+**区分が読めなかった棟は重要文化財側へ落ちる**ので、その件数は `build-records` の
+報告に出して見張る。
 
 ## しくみ
 
@@ -97,16 +134,7 @@ ln -s ~/Repos/bunkazai data
 `data` は gitignore 済みで、**symlink も追跡されない** (だからデータリポジトリは
 別リポジトリのまま独立した履歴を持つ。submodule にはしない)。
 
-出力先は文化財の種別ごとに分かれる。分類コードとリポジトリは 1:1 ではなく、
-102 だけが詳細ページの「国宝・重文区分」で 2 リポジトリに分かれる
-(定義は `src/heritage_crawler/catalog.py` の `BUILDING_DATASETS` が正本)。
-
-| リポジトリ | 取得対象 |
-|---|---|
-| `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） |
-| `national-treasures` | 102 のうち国宝 |
-| `important-cultural-properties` | 102 のうち重要文化財 |
-| `important-preservation-districts-for-groups-of-traditional-buildings` | 103 重要伝統的建造物群保存地区 |
+出力先は文化財の種別ごとに分かれる (対応表は「[対象の文化財種別](#対象の文化財種別)」)。
 
 キーは英数字に正規化し、分類ごとに名前の違う項目 (指定番号 / 登録番号 /
 告示番号など) は同じキーへ寄せる。日付は ISO 8601、値が空のキーは出さない。
