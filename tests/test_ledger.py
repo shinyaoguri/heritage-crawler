@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeFetcher, fixture, make_csv
+from conftest import FakeFetcher, fixture, make_csv, put_ledger
 from heritage_crawler.cache import LedgerCache
 from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
 from heritage_crawler.ledger import (
@@ -27,7 +27,8 @@ from heritage_crawler.ledger import (
 )
 from heritage_crawler.search_page import ParseError
 
-CATEGORY = TARGET_CATEGORIES[1]  # 102
+CATEGORY = TARGET_CATEGORIES[1]  # 102 (1 指定が複数の棟に展開される)
+UNEXPANDED = TARGET_CATEGORIES[3]  # 401 (指定 = 1 行)
 HOKKAIDO = SEARCH_AREAS[0]
 TOKYO = SEARCH_AREAS[12]
 
@@ -283,6 +284,66 @@ def test_取りこぼしを報告に出す(cache_dir: Path) -> None:
     fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
     report = format_summary(summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO]))
     assert "どの地域でも引けない 6 件" in report
+
+
+def test_件数表示では相殺して消える取りこぼしをキーの異なり数で暴く(cache_dir: Path) -> None:
+    """重複と取りこぼしが同数あると、件数表示どうしの差はどちらも見せない。
+
+    401 の初回取得で実際に起きた形 (Issue #28)。重複 34 と取りこぼし 1 が
+    「重複 33」に化けていた。
+    """
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1", "2", "3"])
+    put_ledger(cache, UNEXPANDED, TOKYO, ["3", "4"])  # 3 が両方の地域に現れる
+    cache.record_whole_count(UNEXPANDED, 5)  # 手元にあるのは 4 件
+
+    summary = summarize(cache, [UNEXPANDED], [HOKKAIDO, TOKYO])[0]
+
+    assert (summary.row_count, summary.unique_key_count) == (5, 4)
+    assert summary.duplicate_rows == 1
+    assert summary.difference == 0  # 件数表示どうしの差では相殺して見えない
+    assert summary.missing_count == 1
+
+
+def test_全国件数より多ければ数え方を疑うよう促す(cache_dir: Path) -> None:
+    """取りこぼしと逆向きの差。件数表示が指定単位でない可能性を示す。"""
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1", "2", "3"])
+    cache.record_whole_count(UNEXPANDED, 2)
+
+    report = format_summary(summarize(cache, [UNEXPANDED], [HOKKAIDO]))
+    assert "全国件数より 1 件多い" in report
+
+
+def test_棟に展開される分類では異なり数で取りこぼしを判定しない(cache_dir: Path) -> None:
+    """102 は 1 指定が複数の棟になるので、異なり数 (棟) と全国件数 (指定) は比べられない。"""
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+    summary = summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO])[0]
+
+    assert summary.unique_key_count == 1  # 同じ棟が 85 行 (フィクスチャの都合)
+    assert summary.missing_count is None
+    assert summary.difference == -6  # こちらは従来どおり見える
+
+
+def test_未取得の地域があれば取りこぼしより先にそれを知らせる(cache_dir: Path) -> None:
+    """取り終えていない段階の異なり数は少なくて当たり前。取りこぼしと混同させない。"""
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1"])
+    cache.record_whole_count(UNEXPANDED, 5)
+
+    report = format_summary(summarize(cache, [UNEXPANDED], [HOKKAIDO, TOKYO]))
+    assert "未取得 1 地域" in report
+    assert "どの地域でも引けない" not in report
+
+
+def test_取りこぼしをキーの異なり数から報告に出す(cache_dir: Path) -> None:
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, UNEXPANDED, HOKKAIDO, ["1", "2"])
+    cache.record_whole_count(UNEXPANDED, 3)
+
+    report = format_summary(summarize(cache, [UNEXPANDED], [HOKKAIDO]))
+    assert "どの地域でも引けない 1 件" in report
 
 
 def test_全国件数が実測時から動いていれば知らせる(cache_dir: Path) -> None:
