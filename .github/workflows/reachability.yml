@@ -1,0 +1,104 @@
+name: 疎通確認
+
+# 押したときだけ走る。月次の差分更新 (Issue #10) を Actions で回す前提が成り立つか
+# — データセンター IP から取得できるか — を最小の負荷で確かめるためのもの
+# (ADR 0006)。**定期実行にはしない。** 相手は公共サイトで、確認に定期的な
+# アクセスは要らない (CI からデータベースを叩かない方針)。
+#
+# 確かめるのは月次更新が使う 3 経路すべて。
+#
+# 1. 台帳の CSV (CSRF + サーバ側セッションに依存する POST。ADR 0002)
+# 2. 検索結果一覧のページ送り (ADR 0017)
+# 3. 詳細ページ (素の GET)
+#
+# 200 で返るエラーページは取得層が弾いて失敗として記録するので (ADR 0011)、
+# WAF に差し替えられていればこのワークフローは赤くなる。
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 分類コード (既定の 103 は 126 件で最小)
+        type: choice
+        default: "103"
+        options:
+          - "103"
+          - "101"
+          - "102"
+          - "401"
+      areas:
+        description: 地域名を空白区切りで絞る (空なら全地域)
+        type: string
+        default: ""
+      detail-limit:
+        description: 詳細ページを試す件数
+        type: string
+        default: "5"
+
+# 同時に走らせない。レートの上限を守れるのは 1 プロセスの中だけで (ADR 0010)、
+# 2 本走れば相手から見た実効レートが 2 倍になる。
+concurrency:
+  group: reachability
+
+permissions:
+  contents: read
+
+jobs:
+  reach:
+    runs-on: ubuntu-latest
+    # 103 の全地域 + 一覧 + 詳細 5 件で 10 分ほど。相手が無応答のまま回り続けない
+    # よう上限を置く。
+    timeout-minutes: 30
+    env:
+      CATEGORY: ${{ inputs.category }}
+      AREAS: ${{ inputs.areas }}
+      DETAIL_LIMIT: ${{ inputs.detail-limit }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: 依存を導入
+        run: pip install -e .
+
+      # 連絡先 (User-Agent) は既定のリポジトリ URL のまま。ここが空になると
+      # マナー違反になるので、環境変数で上書きはしない。
+      - name: 1 段目 — 台帳 (CSV) を取得する
+        shell: bash
+        run: |
+          args=(--category "$CATEGORY")
+          for area in $AREAS; do args+=(--area "$area"); done
+          {
+            echo '## 台帳 (CSV)'
+            echo '```'
+            heritage-crawler fetch-ledger "${args[@]}"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 地域を絞ったときは飛ばす。一覧は地域で絞らず全件を辿るので、台帳が
+      # 一部しか無い状態で突き合わせれば「取りこぼし」になってしまう。
+      # 102 は一覧が指定単位・CSV が棟単位で突き合わせられない (ADR 0017)。
+      - name: 一覧のページ送りで網羅性を確かめる
+        if: inputs.areas == '' && inputs.category != '102'
+        shell: bash
+        run: |
+          {
+            echo '## 検索結果一覧'
+            echo '```'
+            heritage-crawler audit-listing --category "$CATEGORY"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 2 段目 — 詳細ページを取得する
+        shell: bash
+        run: |
+          args=(--category "$CATEGORY")
+          for area in $AREAS; do args+=(--area "$area"); done
+          {
+            echo '## 詳細ページ'
+            echo '```'
+            heritage-crawler fetch-detail "${args[@]}" --limit "$DETAIL_LIMIT"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
