@@ -9,7 +9,8 @@ name: 月次の差分更新
 #
 # 取り直すのは新規・台帳の値が変わったぶん・全体の 1/12 の巡回だけで、
 # 所要は約 70 分 (台帳 204 リクエスト + 約 2,000 件)。ジョブ上限 6 時間に対して
-# 余裕がある。**生成物は決定的**なので、データが変わらない月はコミットが立たない。
+# 余裕がある。**生成物は決定的**なので、データが変わらない月に動くのは
+# `meta.json` の利用日だけ (それも「確認しただけ」と分かるメッセージで残す)。
 #
 # 必要な secret は 2 つ。code4heritage org に GitHub App を作り、**対象の 10
 # リポジトリにだけ**インストールして contents:write を与える。
@@ -156,8 +157,12 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # 生成物は決定的なので、データが変わっていなければ 1 バイトも動かない
-      # (ADR 0014)。**差分の無いリポジトリにはコミットを作らない。**
+      # 生成物は決定的なので、データが変わっていなければ JSON Lines は 1 バイトも
+      # 動かない (ADR 0014)。**差分の無いリポジトリにはコミットを作らない。**
+      #
+      # ただし `meta.json` の利用日は毎月動く (実行日にする。ADR 0018)。データが
+      # 変わらない月もその 1 ファイルだけのコミットが立つので、**履歴で見分けが
+      # つくようメッセージを分ける** — 「確認しただけの月」を差分の月に紛れさせない。
       - name: 変わったリポジトリだけ commit して push
         if: inputs.dry-run != true
         env:
@@ -178,9 +183,17 @@ jobs:
               summary=$(git diff --cached --shortstat)
               # 月は日本時間で切る — 巡回の枠を決めるのも日本時間の月 (ADR 0018)。
               # UTC のまま書くと、月初の実行でコミットの月が 1 つ前になる
+              month=$(TZ=Asia/Tokyo date +%Y-%m)
+              # パイプで数えない (grep -q は git に SIGPIPE を送り、pipefail が
+              # それを失敗と見て「変更なし」に倒しかねない)。名前をそのまま比べる。
+              if [ "$(git diff --cached --name-only)" = "meta.json" ]; then
+                subject="chore(data): ${month} に確認 (データの変更なし)"
+              else
+                subject="chore(data): ${month} の差分を反映"
+              fi
               git -c "user.name=${BOT}" \
                   -c "user.email=${BOT}@users.noreply.github.com" \
-                  commit --quiet -m "chore(data): $(TZ=Asia/Tokyo date +%Y-%m) の差分を反映" \
+                  commit --quiet -m "$subject" \
                                  -m "出典: 国指定文化財等データベース (文化庁)" \
                                  -m "実行: ${RUN_URL}"
               git push --quiet
