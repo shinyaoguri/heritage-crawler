@@ -72,7 +72,8 @@ ADR 0009)。`code4heritage` org 配下の既存リポジトリを使い、新し
 | `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` / `build-records` |
 
 依存パッケージは増やしていない (標準ライブラリで足りる)。
-残る出力先リポジトリと月次更新は Issue #9・#10。
+**初回の全件取得は 2026-08-12 に完走済み** — 20,461 棟が 4 つのデータリポジトリに
+入っている (`code4heritage` 配下)。残るのは月次更新の Issue #10。
 ロードマップと残る論点 (差分検出) は Issue #1 を正本とする。
 
 ### 取得層の作り (#6 / #7)
