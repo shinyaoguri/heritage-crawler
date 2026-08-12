@@ -87,6 +87,16 @@ heritage-crawler build-records    # キャッシュから JSON Lines を組み�
 例: national-treasures/data/29_nara.jsonl
 ```
 
+既定は `data`。データリポジトリ群を置いたディレクトリへ symlink を張っておくと、
+クローラーの手元からデータを辿れて `--output-dir` も渡さずに済む。
+
+```
+ln -s ~/Repos/bunkazai data
+```
+
+`data` は gitignore 済みで、**symlink も追跡されない** (だからデータリポジトリは
+別リポジトリのまま独立した履歴を持つ。submodule にはしない)。
+
 出力先は文化財の種別ごとに分かれる。分類コードとリポジトリは 1:1 ではなく、
 102 だけが詳細ページの「国宝・重文区分」で 2 リポジトリに分かれる
 (定義は `src/heritage_crawler/catalog.py` の `BUILDING_DATASETS` が正本)。
