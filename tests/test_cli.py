@@ -39,6 +39,22 @@ def test_報告は取得せずに出せる(cache_dir: Path, capsys: pytest.Captu
     assert "未取得 51 地域" in printed
 
 
+def test_一覧の突き合わせは既定で回収しない() -> None:
+    """検査と修復は分ける。書き換えるときは --recover を明示する。"""
+    assert build_parser().parse_args(["audit-listing"]).recover is False
+
+
+def test_一覧の突き合わせに取り直しの指定は無い() -> None:
+    """毎回すべて取り直すコマンドなので、--force は意味を持たない。"""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["audit-listing", "--force"])
+
+
+def test_棟に展開される分類だけを選んだら突き合わせない(cache_dir: Path) -> None:
+    """102 は一覧 (指定単位) と CSV (棟単位) を突き合わせられない。"""
+    assert main(["--cache-dir", str(cache_dir), "audit-listing", "--category", "102"]) == 1
+
+
 def test_負の間隔は受け付けない() -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(["fetch-detail", "--interval", "-1"])

@@ -1,0 +1,105 @@
+<!-- 実応答 (2026-08-12 / 401 の全国検索) から必要な箇所だけを切り出したもの。
+     マークアップの癖 (colspan・数値文字参照・見出しに入れ子のフォーム・
+     ページャが PC 用と携帯用で 2 度出ること) は実物のまま残す。
+     _csrfToken はダミー値に差し替え、行は 5 件中 3 件に減らしてある。
+     3 行目は実在する取りこぼし (都道府県が空) を写したもの。 -->
+<html><body>
+<table>
+<tr>
+		<td class="searchnum">
+			5			件中
+			1			件から
+			3			件のデータです。
+		</td>
+		<td align=right style="font-size: 12px;">
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div><input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="sortTarget" value="area"/><input type="hidden" name="sortType" value="asc"/>表示件数 <select name="pageSize"><option value="20" selected="selected">20</option><option value="50">50</option><option value="100">100</option></select> <button type="submit">件数変更</button></form>		</td>
+</tr>
+</table>
+
+<div class="pc_view">
+	<div class="searchlist_page">
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div><div style="display: none;"><input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="sortTarget" value="area"/><input type="hidden" name="sortType" value="asc"/><input type="hidden" name="pageNumber" value="1"/></div><a href="javascript:void(0)" onclick="this.parentNode.submit()">◀前</a></form>
+	</div>
+	<div class="searchlist_page" style="margin-left:50px">
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div><div style="display: none;"><input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="sortTarget" value="area"/><input type="hidden" name="sortType" value="asc"/><input type="hidden" name="pageNumber" value="2"/></div><a href="javascript:void(0)" onclick="this.parentNode.submit()">次▶</a></form>
+	</div>
+</div>
+
+<table class="result" style="margin: 0; width: 100%;">
+		<tr>
+			<td class="result-th" width="*"
+colspan="2"
+			>
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div>					<div style="display: none;">
+<input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="sortTarget" value="entry_name"/><input type="hidden" name="sortType" value="asc"/>					</div>
+                    <button type="submit" class="link-button">名称</button>
+				</form>
+			</td>
+			<td class="result-th" width="*"
+nowrap
+			>文化財種類</td>
+			<td class="result-th" width="*"
+colspan="2"
+			>種別</td>
+			<td class="result-th" width="50"
+nowrap
+			>都道府県、地域&#x25B2;											<br/>
+						※美工品は「所有者住所<br/>
+						（所在都道府県）」
+			</td>
+			<td class="result-th" width="50" nowrap></td>
+		</tr>
+
+			<tr class="resultback1">
+				<td class="resulttitleblue" width="25">
+					<a target="_blank" href="/heritage/detail/401/2">
+						<img src="/img/cate_arrow.gif" id="back2" width="21" height="11" border="0" align="absmiddle" alt="&gt;&gt;"/>					</a>
+				</td>
+				<td class="resulttitleblue" width="205">
+					<a target="_blank" href="/heritage/detail/401/2">
+						阿寒湖のマリモ					</a><br>
+				</td>
+				<td class="result-td">			史跡名勝天然記念物		</td>
+				<td class="result-td">			特別天然記念物		</td>
+				<td class="result-td">			－		</td>
+				<td class="result-td">			北海道		</td>
+				<td class="result-td">
+					<div class="input button"><button type="button" class="mapBt" onclick="mapChange( '401', '2', 43.45322226000000, 144.10229501000000)" style="display:block; width:80px;" id="de-tu-biao-shi">地図表示</button></div>
+				</td>
+			</tr>
+			<tr class="resultback0">
+				<td class="resulttitleblue" width="25">
+					<a target="_blank" href="/heritage/detail/401/3420">
+						<img src="/img/cate_arrow.gif" id="back2" width="21" height="11" border="0" align="absmiddle" alt="&gt;&gt;"/>					</a>
+				</td>
+				<td class="resulttitleblue" width="205">
+					<a target="_blank" href="/heritage/detail/401/3420">
+						山陰道						蒲生峠越					</a><br>
+				</td>
+				<td class="result-td">			史跡名勝天然記念物		</td>
+				<td class="result-td">			史跡		</td>
+				<td class="result-td">			－		</td>
+				<td class="result-td">			２県以上		</td>
+				<td class="result-td">
+					<div class="input button"><button type="button" class="mapBt" onclick="mapChange( '401', '3420', 35.52317022000000, 134.40645565000000)" style="display:block; width:80px;" id="de-tu-biao-shi">地図表示</button></div>
+				</td>
+			</tr>
+			<tr class="resultback1">
+				<td class="resulttitleblue" width="25">
+					<a target="_blank" href="/heritage/detail/401/00003542">
+						<img src="/img/cate_arrow.gif" id="back2" width="21" height="11" border="0" align="absmiddle" alt="&gt;&gt;"/>					</a>
+				</td>
+				<td class="resulttitleblue" width="205">
+					<a target="_blank" href="/heritage/detail/401/00003542">
+						智頭往来						志戸坂峠越					</a><br>
+				</td>
+				<td class="result-td">			史跡名勝天然記念物		</td>
+				<td class="result-td">			史跡		</td>
+				<td class="result-td">			－		</td>
+				<td class="result-td">					</td>
+				<td class="result-td">
+					<div class="input button"><button type="button" class="mapBt" onclick="mapChange( '401', '00003542', 35.20917500000000, 134.32870500000000)" style="display:block; width:80px;" id="de-tu-biao-shi">地図表示</button></div>
+				</td>
+			</tr>
+</table>
+</body></html>

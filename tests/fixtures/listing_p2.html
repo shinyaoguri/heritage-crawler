@@ -1,0 +1,84 @@
+<!-- 同じ実応答の最終ページ。1 ページ目との違いは 3 つ。
+     ・次ページのフォームが出ない (これでページ送りが自然に止まる)
+     ・表示件数を変えた後なので、並べ替えフォームの hidden に pageSize が入る
+       (select ではないので表示件数フォームとは見分けが要る)
+     ・地図表示ボタンの無い行がある (緯度経度が空のもの。実在する) -->
+<html><body>
+<table>
+<tr>
+		<td class="searchnum">
+			5			件中
+			4			件から
+			5			件のデータです。
+		</td>
+		<td align=right style="font-size: 12px;">
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div><input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="pageSize" value="100"/><input type="hidden" name="sortTarget" value="area"/><input type="hidden" name="sortType" value="asc"/>表示件数 <select name="pageSize"><option value="20">20</option><option value="50">50</option><option value="100" selected="selected">100</option></select> <button type="submit">件数変更</button></form>		</td>
+</tr>
+</table>
+
+<div class="pc_view">
+	<div class="searchlist_page">
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div><div style="display: none;"><input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="pageSize" value="100"/><input type="hidden" name="sortTarget" value="area"/><input type="hidden" name="sortType" value="asc"/><input type="hidden" name="pageNumber" value="1"/></div><a href="javascript:void(0)" onclick="this.parentNode.submit()">◀前</a></form>
+	</div>
+</div>
+
+<table class="result" style="margin: 0; width: 100%;">
+		<tr>
+			<td class="result-th" width="*"
+colspan="2"
+			>
+<form method="post" accept-charset="utf-8" action="/bsys/searchlist"><div style="display:none;"><input type="hidden" name="_method" value="POST"/><input type="hidden" name="_csrfToken" autocomplete="off" value="dddd"/></div>					<div style="display: none;">
+<input type="hidden" name="screen_id" value="index"/><input type="hidden" name="page_no" value="1"/><input type="hidden" name="register_sub_id" value="401"/><input type="hidden" name="pageSize" value="100"/><input type="hidden" name="sortTarget" value="entry_name"/><input type="hidden" name="sortType" value="asc"/>					</div>
+                    <button type="submit" class="link-button">名称</button>
+				</form>
+			</td>
+			<td class="result-th" width="*"
+nowrap
+			>文化財種類</td>
+			<td class="result-th" width="*"
+colspan="2"
+			>種別</td>
+			<td class="result-th" width="50"
+nowrap
+			>都道府県、地域&#x25B2;											<br/>
+						※美工品は「所有者住所<br/>
+						（所在都道府県）」
+			</td>
+			<td class="result-th" width="50" nowrap></td>
+		</tr>
+
+			<tr class="resultback1">
+				<td class="resulttitleblue" width="25">
+					<a target="_blank" href="/heritage/detail/401/1979">
+						<img src="/img/cate_arrow.gif" id="back2" width="21" height="11" border="0" align="absmiddle" alt="&gt;&gt;"/>					</a>
+				</td>
+				<td class="resulttitleblue" width="205">
+					<a target="_blank" href="/heritage/detail/401/1979">
+						金剛山					</a><br>
+				</td>
+				<td class="result-td">			史跡名勝天然記念物		</td>
+				<td class="result-td">			史跡		</td>
+				<td class="result-td">			－		</td>
+				<td class="result-td">			奈良県		</td>
+				<td class="result-td">
+					<div class="input button"><button type="button" class="mapBt" onclick="mapChange( '401', '1979', 34.41704925000000, 135.67763542000000)" style="display:block; width:80px;" id="de-tu-biao-shi">地図表示</button></div>
+				</td>
+			</tr>
+			<tr class="resultback0">
+				<td class="resulttitleblue" width="25">
+					<a target="_blank" href="/heritage/detail/401/4001">
+						<img src="/img/cate_arrow.gif" id="back2" width="21" height="11" border="0" align="absmiddle" alt="&gt;&gt;"/>					</a>
+				</td>
+				<td class="resulttitleblue" width="205">
+					<a target="_blank" href="/heritage/detail/401/4001">
+						座標の無い指定					</a><br>
+				</td>
+				<td class="result-td">			史跡名勝天然記念物		</td>
+				<td class="result-td">			天然記念物		</td>
+				<td class="result-td">			－		</td>
+				<td class="result-td">			地域を定めない		</td>
+				<td class="result-td">
+				</td>
+			</tr>
+</table>
+</body></html>

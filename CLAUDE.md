@@ -49,9 +49,17 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 - **seat_pref は格納値の完全一致**で絞る。101 には都道府県が未正規化のまま
   (`98` / `1`) 入った行が 3 件あり、どの option でも引けない。`catalog.IRREGULAR_AREAS`
   で拾っている。この種の取りこぼしは、地域合計と全国件数の差で気付ける
+- **都道府県が空の行はどの seat_pref でも引けない** (空を送ると全国検索になるため
+  `IRREGULAR_AREAS` の手が使えない)。401 に 1 件実在した。**2,000 件超の CSV 出力は
+  504 になる**ので全国 CSV での代替も効かない。検索結果一覧から回収する (ADR 0017)
+- **一覧のページ送りは `page_no` ではなく `pageNumber`。** `page_no` は常に 1 のまま
+  送られる飾りで、変えても 1 ページ目が返る。表示件数は `pageSize` (最大 100)。
+  一覧の行は緯度経度も持つ (地図表示ボタンの `mapChange(...)`。CSV の値と完全一致)
 - CSV 出力はサーバ側セッション + CSRF に依存するが、詳細ページはセッション不要。
   素の HTTP クライアントで足り、ヘッドレスブラウザは要らない
 - トップページのお知らせにある 2,000 件制限は一時的な障害であり恒久仕様ではない
+  (ただし 2026-08-12 時点でも 401 の全国 CSV = 3,281 件は 504。当面は超えない
+  分割で取る)
 - **画像は取得・再配布しない** (作品毎に個別許諾が必要。ADR 0007)
 - 文字情報は出典表示のもとで再配布できる (ADR 0007)。出力データには出典表記を
   必ず付す。コードは MIT、データは文化庁の利用規約と、ライセンスは 2 層に分ける
@@ -68,7 +76,7 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0016 に記録済み。実装は 2 段構えの取得層
+要件議論の主要な決定は ADR 0001〜0017 に記録済み。実装は 2 段構えの取得層
 (台帳・詳細) と解析・出力層まで入っている。
 
 | モジュール | 役割 |
@@ -77,13 +85,14 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 | `src/heritage_crawler/http.py` | レートに上限を設ける HTTP クライアントと発射時刻の共有 |
 | `src/heritage_crawler/search_page.py` | 検索応答から件数と csv-list の hidden 値を取る |
 | `src/heritage_crawler/ledger.py` | 台帳の取得手順、全国件数との突き合わせ、CSV 行の読み出し |
+| `src/heritage_crawler/listing.py` | 検索結果一覧を全ページ辿って網羅性を確かめ、引けない指定を回収する |
 | `src/heritage_crawler/detail.py` | 台帳から取得対象を作り、詳細ページを巡回する (エラーページの検出も) |
 | `src/heritage_crawler/detail_page.py` | 詳細ページの HTML から原文の項目を読む |
 | `src/heritage_crawler/record.py` | **出力スキーマの正本** (ラベル対応・日付・都道府県・欠損) |
 | `src/heritage_crawler/export.py` | キャッシュを走査して種別リポジトリごと・都道府県ごとの JSON Lines を書く |
 | `src/heritage_crawler/metadata.py` | データリポジトリの `meta.json` (出典・利用日・表示名・語彙・件数) |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
-| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` / `build-records` |
+| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `audit-listing` / `fetch-detail` / `report-detail` / `build-records` |
 
 依存パッケージは増やしていない (標準ライブラリで足りる)。
 **初回の全件取得は 2026-08-12 に完走済み** — 23,741 件が 10 のデータリポジトリに
@@ -114,6 +123,10 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
   読んでキーの異なり数を数え、棟に展開されない分類 (`Category.expands_to_buildings`
   が偽 = 102 以外) では全国件数と直接比べる。件数表示ベースの差 (`difference`) は
   102 でしか判定に使えない
+- **足りない指定を名指しするのは `audit-listing`** (ADR 0017)。検索結果一覧を
+  全ページ辿ってキーを集め、台帳と突き合わせる。`--recover` を付けると、
+  地域では引けない指定を一覧の行 (名称・地域欄・緯度経度) から台帳へ回収して
+  `cache/ledger/<分類>/recovered.csv` に書く。102 は単位が違うので対象外
 
 ### 解析・出力層の作り (#8)
 
