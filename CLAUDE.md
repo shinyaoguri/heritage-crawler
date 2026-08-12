@@ -25,7 +25,9 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
   分割軸は都道府県のみで足りる
 - **取得対象は 23,742 件** (台帳を全件取得して確定。101 = 14,748 / 102 = 5,587 /
   103 = 126 / 401 = 3,281)。101・103・401 は指定 = 1 行、102 だけ 1 指定 : 約 2.5 棟。
-  1 req/s で約 6.6 時間、生 HTML は gzip 圧縮で約 270 MB になる (ADR 0011)
+  1 req/s で約 6.6 時間、生 HTML は gzip 圧縮で約 270 MB になる (ADR 0011)。
+  **ここに書いた件数は規模感のための写しで、正本は README の生成表**
+  (`render-readme` が書き出したデータから作り直す)
 - 公共サイトが相手なのでレートに上限を設け、User-Agent に連絡先を記載する。
   **上限 1 req/s を超えると相手は 200 でエラーページを返す** (4 req/s で応答の
   15% が壊れた。ADR 0011)。`Accept-Encoding: gzip` も送るがサーバは返さない (実測)
@@ -93,7 +95,8 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 | `src/heritage_crawler/update.py` | 前回の出力と台帳を突き合わせ、取り直す対象を決める (月次) |
 | `src/heritage_crawler/metadata.py` | データリポジトリの `meta.json` (出典・利用日・表示名・語彙・件数) |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
-| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `audit-listing` / `fetch-detail` / `report-detail` / `build-records` / `update-records` |
+| `src/heritage_crawler/readme.py` | README の件数表を書き出したデータから組み立てる |
+| `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `audit-listing` / `fetch-detail` / `report-detail` / `build-records` / `update-records` / `render-readme` |
 
 依存パッケージは増やしていない (標準ライブラリで足りる)。
 **初回の全件取得は 2026-08-12 に完走済み** — 23,742 件が 10 のデータリポジトリに
@@ -226,7 +229,10 @@ CI ではこれを Python 3.12 / 3.13 / 3.14 のマトリクスで実行し、�
   (secret は `DATA_PUSH_CLIENT_ID` と `DATA_PUSH_PRIVATE_KEY`)。**差分が無い月は
   コミットが立たず、失敗したら Issue が立つ**。台帳の取り直しには
   `audit-listing --recover` を挟む — 都道府県が空の行は回収しないと網羅性が
-  確かめられず、消えた指定を落とせなくなる (ADR 0017)
+  確かめられず、消えた指定を落とせなくなる (ADR 0017)。**README の件数表の
+  ドリフト検査もここに置く** (`render-readme --check`)。`data` は追跡していない
+  ので PR の CI にはデータが無く、ここでしか確かめられない。ずれても**ジョブは
+  失敗させず** Issue に残す (データの push は成功しているため)
 - `.github/workflows/reachability.yml` — 疎通確認。`workflow_dispatch` のみ
   (押したときしか走らない)。月次更新が使う 3 経路 (台帳の CSV・検索結果一覧・
   詳細ページ) を確かめる。既定は 126 件の 103

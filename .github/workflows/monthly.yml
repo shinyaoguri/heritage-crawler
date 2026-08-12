@@ -185,6 +185,63 @@ jobs:
             echo "更新したリポジトリ: ${changed}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # README の件数表は書き出したデータから生成している (Issue #37)。ここでしか
+      # 検証できない — data は追跡していないので、PR の CI にはデータが無い。
+      - name: README の件数表がデータとずれていないか見る
+        id: readme
+        run: |
+          set -uo pipefail
+          if heritage-crawler render-readme --output-dir "$DATA_DIR" --check >expected.md; then
+            echo "drift=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >>"$GITHUB_OUTPUT"
+          fi
+          {
+            echo '## README の件数表'
+            echo '```'
+            cat expected.md
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # **ジョブの失敗にはしない。** データの push は成功しているので、失敗に
+      # すると「月次の差分更新が失敗した」Issue が誤って立つ。ドリフトは直すまで
+      # open のまま残せばよい (freshness.yml と同じ形)。
+      - name: 件数表のずれを Issue に残す
+        if: steps.readme.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="README の件数表がデータとずれている"
+          {
+            echo "月次の差分更新でデータが変わり、README の件数表が古くなった。"
+            echo "データ側は更新済みで、ずれているのはこのリポジトリの README だけ。"
+            echo
+            echo "手元で作り直して PR を出す (データリポジトリを並べた親を指す):"
+            echo
+            echo '```'
+            echo "heritage-crawler render-readme"
+            echo '```'
+            echo
+            echo "あるべき表:"
+            echo
+            echo '````markdown'
+            cat expected.md
+            echo '````'
+            echo
+            echo "実行: ${RUN_URL}"
+          } >body.md
+
+          existing=$(gh issue list --state open --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")] | .[0].number // empty")
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
+
       # 月次は誰も見ていないところで走る。失敗を Issue に残さないと、
       # データが何か月も止まっていることに気付けない (freshness.yml と同じ形)。
       - name: 失敗を Issue に残す
