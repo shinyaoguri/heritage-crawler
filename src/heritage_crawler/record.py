@@ -316,7 +316,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
     page_name = " ".join(
         part for part in (values.get("name", ""), values.get("ridge_name", "")) if part
     )
-    if csv_name and page_name and csv_name != page_name:
+    if csv_name and page_name and _squeezed(csv_name) != _squeezed(page_name):
         # 結合キーの取り違えは、まず名称のずれとして現れる。
         report.name_mismatches.append(f"{row.key} CSV={csv_name} / 詳細={page_name}")
 
@@ -327,6 +327,21 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         record={key: values[key] for key in KEY_ORDER if key in values},
         location=location,
     )
+
+
+def _squeezed(name: str) -> str:
+    """空白を落とした形。名称を比べるときだけ使う。
+
+    CSV は全角スペース、詳細ページは半角スペースで同じ名称を書くことがある
+    (実データ 20,461 件のうち 137 件)。そのまま比べると報告が空白の違いで埋まり、
+    **本当の食い違い (結合キーの取り違え) が見えなくなる**。
+
+    >>> _squeezed("高照神社　津軽信政公墓 （２）") == _squeezed("高照神社 津軽信政公墓 （２）")
+    True
+    >>> _squeezed("秋篠寺本堂") == _squeezed("秋篠寺講堂")
+    False
+    """
+    return re.sub(r"\s+", "", name)
 
 
 def _set_or_drop(values: dict[str, Any], key: str, value: Any) -> None:

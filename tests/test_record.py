@@ -42,6 +42,21 @@ def build(row_: LedgerRow, page_: DetailPage) -> tuple[dict, BuildReport]:  # ty
     return build_record(row_, page_, report).record, report
 
 
+def test_名称の食い違いは空白の違いを無視して見る() -> None:
+    """CSV は全角スペース、詳細は半角スペースのことがある (実データ 137 件)。
+
+    空白の違いで報告が埋まると、本当の食い違い (結合キーの取り違え) が見えなくなる。
+    """
+    _, same = build(
+        row(名称="高照神社", 棟名="津軽信政公墓　（２）"),
+        page({"名称": "高照神社", "棟名": "津軽信政公墓 （２）"}),
+    )
+    assert same.name_mismatches == []
+
+    _, different = build(row(名称="秋篠寺本堂"), page({"名称": "秋篠寺講堂"}))
+    assert len(different.name_mismatches) == 1
+
+
 def test_原文のラベルを正規化したキーへ移す() -> None:
     record, report = build(
         row(), page({"ふりがな": "あきしのでらほんどう", "構造及び形式等": "桁行五間"})
