@@ -8,20 +8,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from conftest import fixture, make_csv, make_row
-from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
-from heritage_crawler.catalog import (
-    DESIGNATED,
-    MONUMENTS,
-    REGISTERED,
-    SEARCH_AREAS,
-    SELECTED,
-    Area,
-    Category,
-)
+from conftest import area_named, fixture, lines, put_detail, put_ledger
+from heritage_crawler.cache import DetailCache, LedgerCache
+from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED
 from heritage_crawler.export import build_dataset, format_report
 
 SAMPLES = {
@@ -54,40 +45,6 @@ def without_kinds(html: str) -> str:
     return html
 
 
-def area_named(name: str) -> Area:
-    return next(area for area in SEARCH_AREAS if area.name == name)
-
-
-def put_ledger(cache: LedgerCache, category: Category, area: Area, ids: list[str]) -> None:
-    rows = [make_row({"台帳ID": category.code, "管理対象ID": managed_id}) for managed_id in ids]
-    cache.record(
-        category,
-        area,
-        LedgerEntry(
-            category_code=category.code,
-            area_name=area.name,
-            hit_count=len(rows),
-            row_count=len(rows),
-            byte_count=0,
-            fetched_at="2026-08-12T00:00:00+00:00",
-        ),
-        make_csv(rows),
-    )
-
-
-def put_detail(cache: DetailCache, category: Category, managed_id: str, html: str) -> None:
-    cache.record(
-        DetailEntry(
-            daichou_id=category.code,
-            kanri_taishou_id=managed_id,
-            ok=True,
-            byte_count=len(html),
-            fetched_at="2026-08-12T00:00:00+00:00",
-        ),
-        html.encode("utf-8"),
-    )
-
-
 def caches(cache_dir: Path) -> tuple[LedgerCache, DetailCache]:
     """3 分類ぶん、実データを切り出した詳細ページ 1 枚ずつを持つキャッシュ。"""
     ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
@@ -95,10 +52,6 @@ def caches(cache_dir: Path) -> tuple[LedgerCache, DetailCache]:
         put_ledger(ledger, category, area_named(area_name), [managed_id])
         put_detail(detail, category, managed_id, fixture(name))
     return ledger, detail
-
-
-def lines(path: Path) -> list[dict]:  # type: ignore[type-arg]
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def test_種別ごとのリポジトリの都道府県ファイルへ書く(cache_dir: Path, tmp_path: Path) -> None:

@@ -79,6 +79,7 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 | `src/heritage_crawler/detail_page.py` | 詳細ページの HTML から原文の項目を読む |
 | `src/heritage_crawler/record.py` | **出力スキーマの正本** (ラベル対応・日付・都道府県・欠損) |
 | `src/heritage_crawler/export.py` | キャッシュを走査して種別リポジトリごと・都道府県ごとの JSON Lines を書く |
+| `src/heritage_crawler/metadata.py` | データリポジトリの `meta.json` (出典・利用日・表示名・語彙・件数) |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
 | `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `fetch-detail` / `report-detail` / `build-records` |
 
@@ -129,6 +130,13 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
   (`~/Repos/bunkazai`) へ symlink を張ってある** ので、クローラーの手元から
   データを辿れて `--output-dir` も要らない。symlink も追跡されないため、
   データリポジトリは別リポジトリのまま (submodule にはしない)
+- **各データリポジトリのルートに `meta.json` を書く** (ADR 0014)。出典表記と
+  **利用日**・表示名・語彙・件数を機械可読で持つ。利用日は詳細を取得した日
+  (`DetailEntry.fetched_at` の最大値) を**日本時間で切る** — 組み立てを走らせた日
+  ではない。UTC のまま切ると日本の夕方以降のぶんが 1 日ずれる。
+  表示名は分類ごとの原文ラベルの実測で、対応表に無いキーは `record.py` の
+  `DERIVED_LABELS` が持つ。**生成物は決定的** (同じ入力なら同じバイト列) にして、
+  データが変わらない月に差分を立てない
 
 ## 検証コマンド
 
