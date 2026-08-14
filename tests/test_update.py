@@ -1,10 +1,10 @@
-"""差分更新層のテスト (ADR 0018)。
+"""差分更新層のテスト (ADR 0018 / ADR 0020)。
 
 **外部サイトへは出ない。** 前回の出力は ``tmp_path`` に書いた JSON Lines で、
 台帳はキャッシュに置いた CSV。ここで守りたいのは 3 つ。
 
-- 取り直すのは新規・台帳の値が変わったぶん・巡回の 1/12 だけ
-- 巡回の割り当てが実行のたびに変わらない (変わると毎月ちがう 1/12 を取る)
+- 取り直すのは新規・台帳の値が変わったぶん・巡回の 1/52 だけ
+- 巡回の割り当てが実行のたびに変わらない (変わると毎週ちがう 1/52 を取る)
 - **取りこぼしを指定解除と読み違えて行を消さない**
 """
 
@@ -17,17 +17,18 @@ from typing import Any
 
 import pytest
 
-from conftest import make_row
+from conftest import make_csv, make_row
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, Category, datasets_for
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.metadata import METADATA_FILENAME
 from heritage_crawler.update import (
-    ROTATION_MONTHS,
+    ROTATION_SLOTS,
     Existing,
+    LedgerDiff,
     Reason,
     UpdateError,
+    compare_ledgers,
     format_plan,
-    ledger_changes,
     plan_update,
     read_existing,
     reuse_for,
@@ -63,77 +64,105 @@ def write_records(
 class Test巡回の割り当て:
     def test_実行のたびに同じ枠へ入る(self) -> None:
         """組み込みの hash は実行ごとに種が変わるので使えない (毎月ちがう 1/12 を取ってしまう)。"""
-        assert rotation_slot("401/00003452") == rotation_slot("401/00003452") == 1
+        assert rotation_slot("401/00003452") == rotation_slot("401/00003452") == 5
 
-    def test_枠は0から11(self) -> None:
-        slots = {rotation_slot(f"101/{number}") for number in range(500)}
-        assert slots == set(range(ROTATION_MONTHS))
+    def test_枠は0から51(self) -> None:
+        slots = {rotation_slot(f"101/{number}") for number in range(2000)}
+        assert slots == set(range(ROTATION_SLOTS))
 
     def test_キーが違えば枠も散る(self) -> None:
-        """同じ台帳ID の連番が同じ枠に固まると、1 か月に負荷が寄る。"""
-        slots = [rotation_slot(f"101/{number:08d}") for number in range(120)]
+        """同じ台帳ID の連番が同じ枠に固まると、その週に負荷が寄る。"""
+        slots = [rotation_slot(f"101/{number:08d}") for number in range(520)]
         assert max(slots.count(slot) for slot in set(slots)) < 30
 
 
-class Test台帳との突き合わせ:
-    def test_一致していれば変更なし(self) -> None:
-        changed = ledger_changes(
-            row(REGISTERED, {"名称": "宮下家住宅主屋", "所在地": "横浜市", "緯度": "35.4"}),
-            record(name="宮下家住宅主屋", address="横浜市", latitude=35.4),
+class Test台帳同士の突き合わせ:
+    """前回の台帳と今回の台帳を CSV 同士で比べる (ADR 0020)。
+
+    前は CSV の値と出力 (JSON Lines) の値を比べていたので、意味が揃う列だけを選ぶ・
+    分類ごとに読み替える・空欄は飛ばす、という近似が要った。同じ台帳どうしなら
+    18 列を素直に比べられる。
+    """
+
+    def ledger(self, root: Path, name: str, rows: list[dict[str, str]]) -> Path:
+        """台帳の CSV を 1 つ書く。`root` は cache/ledger に当たるディレクトリ。"""
+        path = root / REGISTERED.code / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            make_csv([make_row({"台帳ID": REGISTERED.code, **values}) for values in rows])
         )
-        assert changed == []
+        return path
 
-    def test_空白だけの違いは変更としない(self) -> None:
-        """CSV は全角、詳細ページは半角で同じ名称を書くことがある (実データで 137 件)。"""
-        changed = ledger_changes(
-            row(REGISTERED, {"名称": "高照神社　津軽信政公墓"}),
-            record(name="高照神社 津軽信政公墓"),
+    def compare(self, tmp_path: Path, before: list[dict[str, str]], after: list[dict[str, str]]):  # type: ignore[no-untyped-def]
+        self.ledger(tmp_path / "before", "13-tokyo.csv", before)
+        self.ledger(tmp_path / "after", "13-tokyo.csv", after)
+        return compare_ledgers(tmp_path / "before", tmp_path / "after", [REGISTERED])
+
+    def test_バイトが同じファイルは変化として数えない(self, tmp_path: Path) -> None:
+        rows = [{"管理対象ID": "1", "名称": "宮下家住宅主屋", "所在地": "横浜市"}]
+        diff = self.compare(tmp_path, rows, rows)
+
+        assert diff.changed_files == ()
+        assert diff.changed == {}
+        assert diff.compared_files == 1
+
+    def test_値が変わった列を名指しする(self, tmp_path: Path) -> None:
+        diff = self.compare(
+            tmp_path,
+            [{"管理対象ID": "1", "名称": "古い名前", "緯度": "35.4"}],
+            [{"管理対象ID": "1", "名称": "新しい名前", "緯度": "35.5"}],
         )
-        assert changed == []
 
-    def test_名称と座標の変更を見つける(self) -> None:
-        changed = ledger_changes(
-            row(REGISTERED, {"名称": "新しい名前", "緯度": "35.4", "経度": "139.5"}),
-            record(name="古い名前", latitude=35.4, longitude=139.0),
+        assert diff.changed == {"101/1": ("名称", "緯度")}
+        assert diff.changed_files == ("101/13-tokyo.csv",)
+
+    def test_空欄になった変更も見つける(self, tmp_path: Path) -> None:
+        """CSV 同士なので「値が消えた」も差分になる (出力との比較では飛ばしていた)。"""
+        diff = self.compare(
+            tmp_path,
+            [{"管理対象ID": "1", "所在地": "横浜市"}],
+            [{"管理対象ID": "1", "所在地": ""}],
         )
-        assert changed == ["名称", "経度"]
+        assert diff.changed == {"101/1": ("所在地",)}
 
-    def test_座標が消えたことも見つける(self) -> None:
-        changed = ledger_changes(row(REGISTERED, {"緯度": "35.4"}), record())
-        assert changed == ["緯度"]
+    def test_並びが変わっただけなら差分にしない(self, tmp_path: Path) -> None:
+        """相手先の並び順が安定している保証は無い。バイトは違っても中身は同じ。"""
+        rows = [
+            {"管理対象ID": "1", "名称": "一つ目"},
+            {"管理対象ID": "2", "名称": "二つ目"},
+        ]
+        diff = self.compare(tmp_path, rows, list(reversed(rows)))
 
-    def test_種別の増減は1つの欄として報せる(self) -> None:
-        """種別1 / 種別2 はどちらが動いても「種別が変わった」以上の意味を持たない。"""
-        changed = ledger_changes(
-            row(MONUMENTS, {"種別1": "史跡", "種別2": "名勝"}), record(types=["史跡"])
+        assert diff.changed_files == ("101/13-tokyo.csv",)  # バイトは違う
+        assert diff.changed == {}  # 中身は同じ
+
+    def test_前回に無い行はここでは扱わない(self, tmp_path: Path) -> None:
+        """追加は台帳と出力の突き合わせが受け持つ (前回の台帳が無い回でも働くため)。"""
+        diff = self.compare(
+            tmp_path,
+            [{"管理対象ID": "1", "名称": "もとから"}],
+            [{"管理対象ID": "1", "名称": "もとから"}, {"管理対象ID": "2", "名称": "新規"}],
         )
-        assert changed == ["種別"]
+        assert diff.changed == {}
 
-    def test_102の種別1は国宝重文区分として比べる(self) -> None:
-        """CSV の列は分類によって意味が変わる (CLAUDE.md)。
+    def test_地域をまたいで移った行は変更になる(self, tmp_path: Path) -> None:
+        """片方の CSV で消えてもう片方に現れる。**両方のファイルが変化するので拾える。**"""
+        moved = {"管理対象ID": "1", "名称": "移った指定"}
+        self.ledger(tmp_path / "before", "13-tokyo.csv", [{**moved, "都道府県": "東京都"}])
+        self.ledger(tmp_path / "before", "26-kyoto.csv", [])
+        self.ledger(tmp_path / "after", "13-tokyo.csv", [])
+        self.ledger(tmp_path / "after", "26-kyoto.csv", [{**moved, "都道府県": "京都府"}])
 
-        取り違えると 102 の全件が毎月「変わった」ことになる。
-        """
-        unchanged = ledger_changes(
-            row(DESIGNATED, {"種別1": "重要文化財", "種別2": "近代／学校"}),
-            record(national_treasure_class="重要文化財", types=["近代／学校"]),
-        )
-        assert unchanged == []
+        diff = compare_ledgers(tmp_path / "before", tmp_path / "after", [REGISTERED])
+        assert diff.changed == {"101/1": ("都道府県",)}
 
-        promoted = ledger_changes(
-            row(DESIGNATED, {"種別1": "国宝", "種別2": "近代／学校"}),
-            record(national_treasure_class="重要文化財", types=["近代／学校"]),
-        )
-        # 振り分け先リポジトリが変わる変更なので、翌月に取り直したい (ADR 0009)
-        assert promoted == ["種別1"]
+    def test_前回の台帳が無ければ全ファイルが変化(self, tmp_path: Path) -> None:
+        """初回。突き合わせる相手がいないので、行の変更は 1 件も出ない。"""
+        self.ledger(tmp_path / "after", "13-tokyo.csv", [{"管理対象ID": "1", "名称": "初回"}])
 
-    def test_CSVが空の欄は比べない(self) -> None:
-        """一覧から回収した行は所在地も種別も持たない (ADR 0017)。毎月「変わった」にしない。"""
-        changed = ledger_changes(
-            row(MONUMENTS, {"名称": "オオサンショウウオ生息地"}),
-            record(name="オオサンショウウオ生息地", address="鳥取県", types=["天然記念物"]),
-        )
-        assert changed == []
+        diff = compare_ledgers(tmp_path / "before", tmp_path / "after", [REGISTERED])
+        assert diff.changed_files == ("101/13-tokyo.csv",)
+        assert diff.changed == {}
 
 
 class Test前回の出力の読み戻し:
@@ -204,6 +233,8 @@ class Test計画:
         settings: dict[str, Any] = {
             "slot": rotation_slot("101/rotate"),
             "complete_categories": ALL_CATEGORIES,
+            # 台帳同士の突き合わせ (ADR 0020) が見つけたぶん。
+            "diff": LedgerDiff(changed={"101/changed": ("名称",)}),
         }
         return plan_update(self.existing(), self.rows(), **(settings | overrides))
 
@@ -236,7 +267,7 @@ class Test計画:
         assert plan.retained == ["101/gone"]
 
     def test_巡回の枠が違えば取り直さない(self) -> None:
-        plan = self.plan(slot=(rotation_slot("101/rotate") + 1) % ROTATION_MONTHS)
+        plan = self.plan(slot=(rotation_slot("101/rotate") + 1) % ROTATION_SLOTS)
 
         assert {item.reason for item in plan.refetch} == {Reason.ADDED, Reason.CHANGED}
         assert plan.unchanged == 2
@@ -305,6 +336,7 @@ def test_計画の報告に件数と理由が出る() -> None:
         Test計画().rows(),
         slot=rotation_slot("101/rotate"),
         complete_categories=ALL_CATEGORIES,
+        diff=LedgerDiff(changed={"101/changed": ("名称",)}),
     )
 
     text = format_plan(plan, existing)

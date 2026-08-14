@@ -90,10 +90,10 @@
    [ADR 0008](docs/decisions/0008-normalize-schema-detail-page-wins.md) /
    [ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md))
 
-初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の月次実行で回す
+初回の全件取得はローカルで実行し、以降の差分更新を GitHub Actions の週次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
-差分は台帳の突き合わせと 1/12 の巡回で見つける
-([ADR 0018](docs/decisions/0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md)。
+差分は**前回の台帳との突き合わせ**と 1/52 の巡回で見つける
+([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md)。
 `update-records`)。
 
 ## 使い方
@@ -106,7 +106,7 @@ heritage-crawler audit-listing    # 検索結果一覧と突き合わせて取�
 heritage-crawler fetch-detail     # 2 段目: 台帳の各行から詳細ページをキャッシュへ
 heritage-crawler report-detail    # 詳細ページの取得状況を確かめる
 heritage-crawler build-records    # キャッシュから JSON Lines を組み立てる
-heritage-crawler update-records   # 月次: 前回の出力と突き合わせて差分だけ取り直す
+heritage-crawler update-records   # 週次: 前回の出力と突き合わせて差分だけ取り直す
 heritage-crawler render-readme    # この README の件数表を書き出したデータから作り直す
 ```
 
@@ -198,40 +198,45 @@ JSON Lines を見ただけでは分からないものを機械可読で持つ。
 利用日は規約が求める表示の一部で、散文に手で書くと更新のたびに嘘になる。
 `meta.json` を正本にして、データを読む側が分類ごとの差異を知らずに済むようにする。
 
-### 月次 — `update-records`
+### 週次 — `update-records`
 
 **前回の状態はデータリポジトリの JSON Lines そのもの**として扱い、台帳と
 突き合わせて差分だけを取り直す
-([ADR 0018](docs/decisions/0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md))。
-キャッシュも生 HTML も月次実行へ持ち回らない。
+([ADR 0018](docs/decisions/0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md) /
+[ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md))。
+キャッシュも生 HTML も週次実行へ持ち回らない (**台帳の CSV だけは持ち回る**)。
 
 ```bash
-heritage-crawler fetch-ledger                  # 台帳は毎月まるごと取り直す
-heritage-crawler audit-listing                 # 網羅性を確かめる
-heritage-crawler update-records --dry-run      # 何を取り直すかを見る
-heritage-crawler update-records                # 取り直して書き直す
+heritage-crawler fetch-ledger                          # 台帳は毎週まるごと取り直す
+heritage-crawler compare-ledgers --previous <前回の ledger/>   # CSV 同士で突き合わせる
+heritage-crawler audit-listing                         # 網羅性を確かめる
+heritage-crawler update-records --dry-run              # 何を取り直すかを見る
+heritage-crawler update-records                        # 取り直して書き直す
 ```
 
 取り直すのは 3 種類だけ。
 
 1. 台帳に現れた新しいキー (新規指定)
-2. 台帳の値が前回の出力と食い違うキー — 名称・所在地・所有者名・時代・種別・
-   緯度経度で比べる (**手元の 23,742 件で一致率を実測して選んだ列**)
-3. **巡回のぶん — 全体の 1/12。** `(台帳ID, 管理対象ID)` のハッシュを 12 で
-   割った余りが実行月に一致するものを取る。ソース側に更新日が無く、詳細ページ
-   だけの項目 (解説文・員数など) の変更は取り直して比べるしか捕まえられないため
+2. **前回の台帳と値が食い違うキー** — CSV 同士なので 18 列すべてを素直に比べる。
+   まずファイルごとにバイトで比べ、違ったファイルの行だけを突き合わせる
+3. **巡回のぶん — 全体の 1/52。** `(台帳ID, 管理対象ID)` のハッシュを 52 で
+   割った余りが実行週の ISO 週番号に一致するものを取る。ソース側に更新日が無く、
+   詳細ページだけの項目 (解説文・員数など) の変更は取り直して比べるしか
+   捕まえられないため
 
 台帳から消えたキーは指定解除として落とすが、**その分類の網羅性が確かめられて
 いるときに限る** — 取得の失敗や相手側の一時的な障害を指定解除と誤認して行を
 消さないため。確かめられない分類の行は残したうえで報告に出す。
 
 - `--dry-run` — 計画だけを出す (相手先へも出ず、出力も書き換えない)
-- `--month` — 巡回の枠に使う月 (既定は実行月)
-- 利用日は**実行日** (日本時間)。既存の行がいつ取得されたかは出力から分からず、
-  台帳は毎月まるごと取り直しているため
+- `--slot` — 巡回の枠 1〜52 (既定は実行週の ISO 週番号)
+- `--previous-ledger` — 前回の台帳ディレクトリ。**渡さないと「値が変わった」を
+  見つけられない** (追加・削除・巡回はそのまま働く)
+- 利用日は**そのデータを取り出した日**。行が 1 つも動かなかった種別は前回の
+  日付を据え置く
 - 取り直していない行は前回の出力をそのまま使う。**生成物は決定的**なので、
-  データが変わらない月は JSON Lines に 1 バイトも差分が出ない
-  (`meta.json` の利用日だけは毎月動く)
+  データが変わらない週は `meta.json` を含めて 1 バイトも差分が出ない —
+  **確認しただけの週にコミットは立たない**
 
 ### 件数表の作り直し — `render-readme`
 
@@ -246,7 +251,7 @@ heritage-crawler render-readme --check    # 書き換えず、ずれていれば
 - 書き換えるのは差し込み口 (`<!-- generated: ... -->`) の中だけ
 - **`meta.json` の申告件数と JSON Lines の行数が食い違ったら止まる。** 片方だけ
   古い状態から作ると、生成物なのに実態と合わないものができる
-- `--check` は月次の差分更新でも走らせ、ずれていたら Issue に残す。CI では
+- `--check` は週次の差分更新でも走らせ、ずれていたら Issue に残す。CI では
   検証できない — `data` は追跡していないので、リポジトリの中にデータが無い
 
 ## データの出典と利用条件
@@ -269,7 +274,7 @@ heritage-crawler render-readme --check    # 書き換えず、ずれていれば
 ```
 
 **利用日 (`YYYY年M月D日`) をこの README に書き込まない。** データセットごとに違い、
-月次更新では実行日になる (ADR 0018) ので、写せば毎月ドリフトする — そしてこの値は
+データが変わるたびに動く (ADR 0020) ので、写せばドリフトする — そしてこの値は
 **ドリフトがそのまま規約違反になる**。正本は各データリポジトリの `meta.json` で、
 日付を埋めた出典表記そのものも `source.attribution` に組み立ててある (ADR 0014)。
 
@@ -301,47 +306,54 @@ pytest -q
 gh workflow run reachability.yml
 ```
 
-差分更新は GitHub Actions の月次実行で回す
+差分更新は GitHub Actions の週次実行で回す
 ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md)) が、
-データセンター IP から取得できるかは相手先の WAF 次第で読めない。月次更新が使う
+データセンター IP から取得できるかは相手先の WAF 次第で読めない。週次更新が使う
 3 経路 — 台帳の CSV (CSRF + セッション)・検索結果一覧のページ送り・詳細ページ —
 を既定で 126 件の分類 103 に対して通し、取れることを確かめる。**200 で返る
 エラーページは取得層が弾いて失敗にする**ので、差し替えられていれば赤くなる
 ([ADR 0011](docs/decisions/0011-back-off-to-1-rps-and-detect-error-pages.md))。
 
-### 月次の差分更新 (`.github/workflows/monthly.yml`)
+### 週次の差分更新 (`.github/workflows/weekly.yml`)
 
-毎月 2 日 03:00 JST に走り、10 のデータリポジトリを clone → 台帳を取り直す →
-差分だけ詳細を取り直す → 変わったリポジトリだけ push する (所要 約 70 分)。
-手で押すこともできる (`dry-run` で計画だけ、`month` で巡回の枠を指定)。
+毎週月曜 03:00 JST に走り、10 のデータリポジトリを clone → 台帳を取り直す →
+**前回の台帳とバイト単位で突き合わせる** → 変わったぶんだけ詳細を取り直す →
+変わったリポジトリだけ push する
+([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md))。
+手で押すこともできる (`dry-run` で計画だけ、`slot` で巡回の枠を指定)。
 
 ```bash
-gh workflow run monthly.yml -f dry-run=true
+gh workflow run weekly.yml -f dry-run=true
 ```
 
-- **データが変わらない月は JSON Lines が動かない** (生成物が決定的なため)。
-  動くのは `meta.json` の利用日だけで、その月のコミットは
-  `chore(data): YYYY-MM に確認 (データの変更なし)` になる。**履歴で「確認しただけの
-  月」と「データが変わった月」を見分けられる**
+- **前回の台帳は artifact で持ち回る** (189 ファイル / 6.3 MB、保持 90 日)。
+  次回の基準になるので、push の成否によらず必ず残す
+- **件数で当たりを付けない。** 増加と減少が同じ週に重なると数字が動かず、
+  見逃すため。台帳を取り直すこと自体が正確さの担保になっている
+- **データが変わらない週はどこにもコミットが立たない。** 生成物が決定的で、
+  利用日も「そのデータを取り出した日」なので動かない。確かめ続けていることは
+  サイトの「最終確認」が示す (クローラーが確認日を渡す)
 - **失敗したら Issue が立つ** (同じ Issue が open なら追記する)。誰も見ていない
   ところで走るので、止まっていることに気付けるようにしておく
 - 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
   どの地域でも引けず**、一覧から回収しないと網羅性が確かめられない
-  ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))
+  ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))。
+  **CSV が 1 バイトも動いていない週は走らせない** (回収ぶんは artifact に残っている)
 - **相手先が 504 を返す時間帯がある** (1 req/s を守っていても起きる)。取得は
-  `scripts/retry.sh` で 5 分空けて繰り返す。60 秒の不調で 1 か月ぶんの更新を
+  `scripts/retry.sh` で 5 分空けて繰り返す。60 秒の不調で 1 週ぶんの更新を
   落とさないため
 
 push 先が別リポジトリなので `GITHUB_TOKEN` では足りない。`code4heritage` org に
-GitHub App を作り、**対象の 10 リポジトリにだけ**インストールして
-`contents: write` を与え、secret を 2 つ登録する。
+GitHub App を作り、**対象の 10 リポジトリ**に `contents: write` を、
+**`heritages`** に `actions: write` と Variables の書き込みを与えて、secret を
+2 つ登録する (heritages を起こして確認日を渡すため)。
 
 | secret | 中身 |
 |---|---|
 | `DATA_PUSH_CLIENT_ID` | App の Client ID |
 | `DATA_PUSH_PRIVATE_KEY` | App の秘密鍵 (PEM のまま) |
 
-個人の PAT を使わないのは、**有効期限が切れた月に静かに失敗する**のを避けるため。
+個人の PAT を使わないのは、**有効期限が切れた週に静かに失敗する**のを避けるため。
 App のトークンは実行のたびに発行され、期限切れが無い。
 
 設計判断は `docs/decisions/` の ADR に、進行状況と残る論点は

@@ -307,6 +307,65 @@ class Test前回の出力を使い回す:
         assert report.retained == 1
         assert "台帳に出なかったが残した: 1 件" in format_report(report)
 
+    def test_行が動かなければ利用日を据え置く(self, cache_dir: Path, tmp_path: Path) -> None:
+        """確認しただけの回にコミットを立てない (ADR 0020)。
+
+        利用日は「そのデータを取り出した日」なので、取り出し直していない回に
+        動かす理由が無い。据え置けば `meta.json` も 1 バイトも変わらない。
+        """
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        before = self.snapshot(out)
+        existing = read_existing(out, datasets_for(list(SAMPLES)))
+
+        build_dataset(
+            ledger,
+            DetailCache(tmp_path / "empty"),
+            list(SAMPLES),
+            output_dir=out,
+            reuse=Reuse(
+                records=existing.records,
+                labels=existing.labels,
+                # ずっと後の回に走らせても、行が動かなければ日付は進まない。
+                accessed_at="2026-12-25T00:00:00+00:00",
+                accessed_dates=existing.accessed_dates,
+            ),
+        )
+
+        assert self.snapshot(out) == before
+
+    def test_行が動いた種別だけ利用日が進む(self, cache_dir: Path, tmp_path: Path) -> None:
+        """取り直したぶんがあるなら、その種別の利用日は実行日になる。"""
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        existing = read_existing(out, datasets_for(list(SAMPLES)))
+        # 102 の 1 行だけ違う値にする。詳細キャッシュを外すので、この値がそのまま
+        # 書き出されて前回と食い違う = その種別の行が動いた状態になる。
+        changed = dict(existing.records["102/2594"], name="別の名前")
+
+        build_dataset(
+            ledger,
+            DetailCache(tmp_path / "empty"),
+            list(SAMPLES),
+            output_dir=out,
+            reuse=Reuse(
+                records={**existing.records, "102/2594": changed},
+                labels=existing.labels,
+                accessed_at="2026-12-25T00:00:00+00:00",
+                accessed_dates=existing.accessed_dates,
+            ),
+        )
+
+        def accessed(repo: str) -> str:
+            meta = json.loads((out / repo / "meta.json").read_text(encoding="utf-8"))
+            return str(meta["source"]["accessed_date"])
+
+        assert accessed("national-treasures") == "2026-12-25"
+        # 動いていない種別は据え置き。**動いたぶんだけコミットが立つ。**
+        assert accessed("registered-tangible-cultural-properties") == "2026-08-12"
+
     def test_利用日は実行日になり表示名は前回から引き継ぐ(
         self, cache_dir: Path, tmp_path: Path
     ) -> None:
