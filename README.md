@@ -353,6 +353,20 @@ GitHub App を作り、**対象の 10 リポジトリ**に `contents: write` を
 | `DATA_PUSH_CLIENT_ID` | App の Client ID |
 | `DATA_PUSH_PRIVATE_KEY` | App の秘密鍵 (PEM のまま) |
 
+**App の権限はリポジトリごとには分けられない** (Permissions は App 単位で、
+インストール先すべてに上限として付く)。代わりに**トークンを用途ごとに発行して
+絞る**。ワークフローでは 3 回に分けている。
+
+| 用途 | 対象 | 権限 |
+|---|---|---|
+| clone | インストール先すべて | `contents: write` |
+| push | 同上 | `contents: write` |
+| サイトを起こす | `heritages` だけ | `actions: write` / `variables: write` |
+
+**push の直前にトークンを取り直すのが要**。App のトークンは 1 時間で切れるので、
+取得に 30〜60 分かかると最初に発行したものでは押せなくなる。clone のときに
+埋め込んだ URL も、取り直したトークンへ張り替えてから押す。
+
 個人の PAT を使わないのは、**有効期限が切れた週に静かに失敗する**のを避けるため。
 App のトークンは実行のたびに発行され、期限切れが無い。
 
