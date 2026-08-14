@@ -1,38 +1,37 @@
-name: 月次の差分更新
+name: 週次の差分更新
 
-# 台帳を毎月まるごと取り直し、差分だけ詳細ページを取り直して 10 のデータ
-# リポジトリへ push する (ADR 0006 / ADR 0018)。
+# 台帳を毎週まるごと取り直し、**前回の台帳とバイト単位で突き合わせて**変わったぶんだけ
+# 詳細ページを取り直す (ADR 0020)。あわせて全体の 1/52 を巡回する。
 #
-# **前回の状態はデータリポジトリの JSON Lines そのもの。** キャッシュも生 HTML も
-# ここへは持ち回らない (Actions のキャッシュは 7 日でエビクトされ、月次には残らない)。
-# だから毎回 10 リポジトリを clone するところから始める。
+# **前回の台帳は artifact で持ち回る** (189 ファイル / 6.3 MB、保持 90 日)。
+# 前回の出力はデータリポジトリの JSON Lines そのもの (ADR 0018) なので、毎回 10
+# リポジトリを clone するところから始めるのは変わらない。
 #
-# 取り直すのは新規・台帳の値が変わったぶん・全体の 1/12 の巡回だけで、
-# 所要は約 70 分 (台帳 204 リクエスト + 約 2,000 件)。ジョブ上限 6 時間に対して
-# 余裕がある。**生成物は決定的**なので、データが変わらない月に動くのは
-# `meta.json` の利用日だけ (それも「確認しただけ」と分かるメッセージで残す)。
+# 件数で当たりを付ける案は捨てた — **増加と減少が同じ週に重なると数字が動かず、
+# 見逃す**。台帳を取り直すこと自体が正確さの担保になっている。
 #
-# 必要な secret は 2 つ。code4heritage org に GitHub App を作り、**対象の 10
-# リポジトリにだけ**インストールして contents:write を与える。
+# **データが変わらない週はコミットが立たない** (ADR 0020)。利用日は「そのデータを
+# 取り出した日」なので、取り出し直していない種別では動かない。確かめ続けている
+# ことはサイトの「最終確認」が示す (下で heritages へ渡す)。
 #
-# - DATA_PUSH_CLIENT_ID   … App の Client ID (App 設定ページに出る Iv23... の値)
+# 必要な secret は 2 つ。code4heritage org の GitHub App で、**対象 10 リポジトリに
+# contents:write**、**heritages に actions:write と Variables の書き込み**を与える。
+#
+# - DATA_PUSH_CLIENT_ID   … App の Client ID
 # - DATA_PUSH_PRIVATE_KEY … App の秘密鍵 (PEM のまま)
-#
-# 個人の PAT を使わないのは、有効期限が切れた月に静かに失敗するのを避けるため。
-# App のトークンは実行のたびに発行され、期限切れが無い。
 
 on:
   schedule:
-    # 毎月 2 日 03:00 JST (前日 18:00 UTC)。相手は公共サイトなので深夜帯に寄せる
-    - cron: "0 18 1 * *"
+    # 毎週月曜 03:00 JST (日曜 18:00 UTC)。相手は公共サイトなので深夜帯に寄せる
+    - cron: "0 18 * * 0"
   workflow_dispatch:
     inputs:
       dry-run:
         description: 計画だけを出す (相手先へ出ず、push もしない)
         type: boolean
         default: false
-      month:
-        description: 巡回の枠に使う月 1〜12 (空なら実行月)
+      slot:
+        description: 巡回の枠 1〜52 (空なら実行週の ISO 週番号)
         type: string
         default: ""
 
@@ -40,21 +39,24 @@ on:
 # 2 本走れば相手から見た実効レートが 2 倍になる。走っている回を殺さないのは、
 # push まで終える前に切ると一部のリポジトリだけ更新された状態で残るため。
 concurrency:
-  group: monthly-update
+  group: weekly-update
   cancel-in-progress: false
 
 permissions:
   contents: read
   issues: write
+  actions: read # 前回の run から台帳の artifact を取る
 
 env:
   DATA_DIR: data
+  LEDGER_ARTIFACT: ledger
+  PREVIOUS_DIR: previous
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    # 実測 70 分 + 相手が遅いときの余裕。無応答のまま 6 時間回り続けさせない
-    timeout-minutes: 240
+    # 台帳 204 リクエスト + 巡回 460 件 + 変わったぶん。相手が遅いときの余裕込み。
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +78,7 @@ jobs:
           set -euo pipefail
           if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
             echo "::error::DATA_PUSH_CLIENT_ID / DATA_PUSH_PRIVATE_KEY が無い。" \
-              "code4heritage org の GitHub App (contents:write) を作って登録する"
+              "code4heritage org の GitHub App を作って登録する"
             exit 1
           fi
 
@@ -88,10 +90,8 @@ jobs:
           private-key: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
           # リポジトリ名を並べない。**対応表の正本は catalog.TARGET_DATASETS**
           # (ADR 0009 / ADR 0012) で、ここに書くと二重管理になる。App の
-          # インストール先を 10 リポジトリに絞ることで範囲を限る。
+          # インストール先を絞ることで範囲を限る。
           owner: code4heritage
-          # App が他の権限を持っていても、この実行では書き込み先を絞る
-          permission-contents: write
 
       # 出力先の一覧はコードから出す (対応表を YAML に書き写さない)。
       - name: データリポジトリを clone (= 前回の状態)
@@ -112,11 +112,34 @@ jobs:
           done <repos.txt
           echo "clone した: $(wc -l <repos.txt) リポジトリ"
 
-      # 相手先は時間帯によって 504 を返す (2026-08-12 の初回実行で実測)。HTTP
-      # クライアント側の再試行 (約 2 分) では抜けられないことがあり、**60 秒の
-      # 不調で 1 か月ぶんの更新が飛ぶ**のは割に合わない。fetch-ledger は取得済みを
-      # 飛ばして再開するので、繰り返しても取りに行くのは未取得のぶんだけ。
+      # **前回の台帳が差分の基準。** artifact は同じ run の中でしか
+      # download-artifact で取れないので、前回の成功した run から取り出す。
+      # 無ければ「台帳の値が変わったぶん」だけが落ちる (追加・削除・巡回は働く)。
+      - name: 前回の台帳を取り出す
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --workflow weekly.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "::warning::前回の成功した実行が無い。台帳の値の変化は今回は見つけられない"
+            exit 0
+          fi
+          if gh run download "$run_id" --name "$LEDGER_ARTIFACT" --dir "$PREVIOUS_DIR"; then
+            echo "found=true" >>"$GITHUB_OUTPUT"
+            echo "前回の台帳を run ${run_id} から取り出した"
+          else
+            echo "::warning::run ${run_id} に台帳の artifact が無い"
+          fi
+
+      # 相手先は時間帯によって 504 を返す (2026-08-12 の実測)。HTTP クライアント側の
+      # 再試行 (約 2 分) では抜けられないことがあり、**60 秒の不調で 1 週ぶんの更新が
+      # 飛ぶ**のは割に合わない。fetch-ledger は取得済みを飛ばして再開するので、
+      # 繰り返しても取りに行くのは未取得のぶんだけ。
       - name: 1 段目 — 台帳 (CSV) を取り直す
+        if: inputs.dry-run != true
         run: |
           set -euo pipefail
           {
@@ -126,12 +149,27 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # **--recover が要る。** 都道府県が空の行はどの seat_pref でも引けず、
-      # 一覧から回収しないと台帳が全国件数に届かない (401 に 1 件実在。ADR 0017)。
-      # 回収しないままだと網羅性が確かめられず、消えた指定を落とせなくなる。
-      # こちらは再開の仕組みが無く、繰り返せば一覧を頭から辿り直す (約 190
-      # リクエスト)。それでも 1 か月待つよりは軽いので、回数を絞って再試行する。
+      # **相手先へは出ない。** 手元の CSV どうしをバイト単位で比べるだけ。
+      - name: 前回の台帳と突き合わせる
+        id: ledger
+        if: steps.previous.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo '## 台帳の差分'
+            echo '```'
+            heritage-crawler compare-ledgers \
+              --previous "${PREVIOUS_DIR}/ledger" --json ledger-diff.json
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "changed=$(jq -r '.changed' ledger-diff.json)" >>"$GITHUB_OUTPUT"
+
+      # **CSV が 1 バイトも変わっていない週は走らせない** (190 リクエストの節約)。
+      # 回収ぶん (recovered.csv) は前回のまま残っているので、網羅性の判断もそのまま
+      # 通る。都道府県が空の行は回収しないと台帳が全国件数に届かず、消えた指定を
+      # 落とせなくなる (401 に 1 件実在。ADR 0017)。
       - name: 一覧と突き合わせて取りこぼしを回収する
+        if: inputs.dry-run != true && steps.ledger.outputs.changed != 'false'
         run: |
           set -euo pipefail
           {
@@ -144,12 +182,16 @@ jobs:
       - name: 2 段目 — 差分だけ取り直して書き直す
         env:
           DRY_RUN: ${{ inputs.dry-run }}
-          MONTH: ${{ inputs.month }}
+          SLOT: ${{ inputs.slot }}
+          FOUND: ${{ steps.previous.outputs.found }}
         run: |
           set -euo pipefail
           args=(--output-dir "$DATA_DIR")
           if [ "${DRY_RUN:-false}" = "true" ]; then args+=(--dry-run); fi
-          if [ -n "${MONTH:-}" ]; then args+=(--month "$MONTH"); fi
+          if [ -n "${SLOT:-}" ]; then args+=(--slot "$SLOT"); fi
+          if [ "${FOUND:-}" = "true" ]; then
+            args+=(--previous-ledger "${PREVIOUS_DIR}/ledger")
+          fi
           {
             echo '## 差分更新'
             echo '```'
@@ -158,14 +200,13 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # 生成物は決定的なので、データが変わっていなければ JSON Lines は 1 バイトも
-      # 動かない (ADR 0014)。**差分の無いリポジトリにはコミットを作らない。**
-      #
-      # ただし `meta.json` の利用日は毎月動く (実行日にする。ADR 0018)。データが
-      # 変わらない月もその 1 ファイルだけのコミットが立つので、**履歴で見分けが
-      # つくようメッセージを分ける** — 「確認しただけの月」を差分の月に紛れさせない。
+      # 動かない (ADR 0014)。**利用日も動かない** (ADR 0020) ので、確認しただけの週は
+      # どのリポジトリにもコミットが立たない。
       - name: 変わったリポジトリだけ commit して push
+        id: push
         if: inputs.dry-run != true
         env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           BOT: ${{ steps.token.outputs.app-slug }}[bot]
         run: |
@@ -181,19 +222,11 @@ jobs:
                 continue
               fi
               summary=$(git diff --cached --shortstat)
-              # 月は日本時間で切る — 巡回の枠を決めるのも日本時間の月 (ADR 0018)。
-              # UTC のまま書くと、月初の実行でコミットの月が 1 つ前になる
-              month=$(TZ=Asia/Tokyo date +%Y-%m)
-              # パイプで数えない (grep -q は git に SIGPIPE を送り、pipefail が
-              # それを失敗と見て「変更なし」に倒しかねない)。名前をそのまま比べる。
-              if [ "$(git diff --cached --name-only)" = "meta.json" ]; then
-                subject="chore(data): ${month} に確認 (データの変更なし)"
-              else
-                subject="chore(data): ${month} の差分を反映"
-              fi
+              # 日付は日本時間で切る — 巡回の枠を決めるのも日本時間の週 (ADR 0020)
+              today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
               git -c "user.name=${BOT}" \
                   -c "user.email=${BOT}@users.noreply.github.com" \
-                  commit --quiet -m "$subject" \
+                  commit --quiet -m "chore(data): ${today} の差分を反映" \
                                  -m "出典: 国指定文化財等データベース (文化庁)" \
                                  -m "実行: ${RUN_URL}"
               git push --quiet
@@ -203,11 +236,23 @@ jobs:
             echo
             echo "更新したリポジトリ: ${changed}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "changed=${changed}" >>"$GITHUB_OUTPUT"
+
+      # **次回の基準になるので、push の成否によらず必ず残す。** ここを落とすと
+      # 翌週は「前回の台帳が無い」状態になり、台帳の値の変化を拾えなくなる。
+      - name: 今回の台帳を残す
+        if: always() && inputs.dry-run != true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.LEDGER_ARTIFACT }}
+          path: cache/ledger
+          retention-days: 90
 
       # README の件数表は書き出したデータから生成している (Issue #37)。ここでしか
       # 検証できない — data は追跡していないので、PR の CI にはデータが無い。
       - name: README の件数表がデータとずれていないか見る
         id: readme
+        if: inputs.dry-run != true
         run: |
           set -uo pipefail
           if heritage-crawler render-readme --output-dir "$DATA_DIR" --check >expected.md; then
@@ -222,9 +267,22 @@ jobs:
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # **ジョブの失敗にはしない。** データの push は成功しているので、失敗に
-      # すると「月次の差分更新が失敗した」Issue が誤って立つ。ドリフトは直すまで
-      # open のまま残せばよい (freshness.yml と同じ形)。
+      # **確認した日を heritages へ渡す。** 利用日はデータを取り出した日なので、
+      # 変わらない週は動かない。確かめ続けていることはサイトの「最終確認」でしか
+      # 示せない。変数に残すのは、サイトのコードを直しただけの回にも表示を保つため。
+      - name: サイトと配布物を起こす
+        if: inputs.dry-run != true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          gh variable set LAST_CHECKED_DATE --repo code4heritage/heritages --body "$today"
+          gh workflow run deliver.yml --repo code4heritage/heritages \
+            --field "checked-date=${today}"
+          echo "heritages を起こした (確認日 ${today})" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ずれても**ジョブは失敗させず** Issue に残す (データの push は成功している)。
       - name: 件数表のずれを Issue に残す
         if: steps.readme.outputs.drift == 'true'
         env:
@@ -234,7 +292,7 @@ jobs:
           set -euo pipefail
           title="README の件数表がデータとずれている"
           {
-            echo "月次の差分更新でデータが変わり、README の件数表が古くなった。"
+            echo "週次の差分更新でデータが変わり、README の件数表が古くなった。"
             echo "データ側は更新済みで、ずれているのはこのリポジトリの README だけ。"
             echo
             echo "手元で作り直して PR を出す (データリポジトリを並べた親を指す):"
@@ -261,8 +319,8 @@ jobs:
             gh issue create --title "$title" --body-file body.md
           fi
 
-      # 月次は誰も見ていないところで走る。失敗を Issue に残さないと、
-      # データが何か月も止まっていることに気付けない (freshness.yml と同じ形)。
+      # 週次は誰も見ていないところで走る。失敗を Issue に残さないと、
+      # データが何週も止まっていることに気付けない (freshness.yml と同じ形)。
       - name: 失敗を Issue に残す
         if: failure()
         env:
@@ -270,9 +328,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          title="月次の差分更新が失敗した"
+          title="週次の差分更新が失敗した"
           {
-            echo "月次の差分更新 (\`.github/workflows/monthly.yml\`) が失敗した。"
+            echo "週次の差分更新 (\`.github/workflows/weekly.yml\`) が失敗した。"
             echo "データリポジトリは前回のままで、行が消えることはない。"
             echo
             echo "実行: ${RUN_URL}"
@@ -281,6 +339,7 @@ jobs:
             echo
             echo '```'
             echo "heritage-crawler fetch-ledger"
+            echo "heritage-crawler compare-ledgers --previous <前回の ledger/>"
             echo "heritage-crawler audit-listing --recover"
             echo "heritage-crawler update-records --dry-run"
             echo '```'

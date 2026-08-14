@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -144,15 +145,15 @@ def test_台帳が無ければ組み立ては失敗させる(cache_dir: Path, tm
     assert not (tmp_path / "data").exists()
 
 
-def test_差分更新の巡回は既定で実行月(cache_dir: Path) -> None:
-    """月をまたいで走らせても、その月の 1/12 を取る (ADR 0018)。"""
-    assert build_parser().parse_args(["update-records"]).month is None
+def test_差分更新の巡回は既定で実行週(cache_dir: Path) -> None:
+    """週をまたいで走らせても、その週の 1/52 を取る (ADR 0020)。"""
+    assert build_parser().parse_args(["update-records"]).slot is None
 
 
-@pytest.mark.parametrize("value", ["0", "13"])
-def test_ありえない月は受け付けない(value: str) -> None:
+@pytest.mark.parametrize("value", ["0", "53"])
+def test_ありえない巡回の枠は受け付けない(value: str) -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["update-records", "--month", value])
+        build_parser().parse_args(["update-records", "--slot", value])
 
 
 def test_台帳が無いまま差分更新を始めない(cache_dir: Path, tmp_path: Path) -> None:
@@ -195,7 +196,7 @@ def test_差分更新のドライランは何も書き換えない(
             "update-records",
             "--output-dir",
             str(out),
-            "--month",
+            "--slot",
             "1",
             "--dry-run",
         ]
@@ -204,7 +205,62 @@ def test_差分更新のドライランは何も書き換えない(
     assert status == 0
     assert {path: path.read_bytes() for path in sorted(out.rglob("*")) if path.is_file()} == before
     printed = capsys.readouterr().out
-    assert "前回の出力 1 件 / 巡回の枠 1/12" in printed
+    assert "前回の出力 1 件 / 巡回の枠 1/52" in printed
+
+
+def test_前回の台帳を渡すと値の変化を見つける(
+    cache_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CSV 同士の突き合わせが CLI から効くこと (ADR 0020)。
+
+    **相手先へは出ない。** 前回の台帳も今回の台帳も手元のファイル。
+    """
+    ledger = LedgerCache(cache_dir)
+    put_ledger(ledger, SELECTED, area_named("京都府"), ["16"], values={"名称": "産寧坂"})
+    put_detail(DetailCache(cache_dir), SELECTED, "16", fixture("detail_103.html"))
+    out = tmp_path / "data"
+    assert main(["--cache-dir", str(cache_dir), "build-records", "--output-dir", str(out)]) == 0
+
+    # 前回の台帳は「名称が違う」状態にしておく = 今回その 1 件が変わったことになる
+    previous = tmp_path / "previous"
+    shutil.copytree(ledger.ledger_dir, previous)
+    path = next(previous.rglob("*.csv"))
+    path.write_bytes(path.read_bytes().replace("産寧坂".encode(), "旧・産寧坂".encode()))
+
+    status = main(
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "update-records",
+            "--output-dir",
+            str(out),
+            "--previous-ledger",
+            str(previous),
+            "--dry-run",
+        ]
+    )
+
+    assert status == 0
+    printed = capsys.readouterr().out
+    assert "1 ファイルが前回と違う" in printed
+    assert "台帳の値が変わった 1" in printed
+
+
+def test_前回の台帳が無ければ値の変化は見つけられない(
+    cache_dir: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**それでも追加・削除・巡回は働く。** 止めるほどのことではない。"""
+    put_ledger(LedgerCache(cache_dir), SELECTED, area_named("京都府"), ["16"])
+    put_detail(DetailCache(cache_dir), SELECTED, "16", fixture("detail_103.html"))
+    out = tmp_path / "data"
+    assert main(["--cache-dir", str(cache_dir), "build-records", "--output-dir", str(out)]) == 0
+
+    status = main(
+        ["--cache-dir", str(cache_dir), "update-records", "--output-dir", str(out), "--dry-run"]
+    )
+
+    assert status == 0
+    assert "前回の台帳が渡されていない" in caplog.text
 
 
 def render_fixture(tmp_path: Path) -> tuple[Path, Path]:

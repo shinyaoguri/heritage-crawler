@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -68,8 +69,11 @@ from heritage_crawler.metadata import JST
 from heritage_crawler.readme import ReadmeError, read_counts, render_block, replace_block
 from heritage_crawler.search_page import ParseError
 from heritage_crawler.update import (
-    ROTATION_MONTHS,
+    ROTATION_SLOTS,
+    LedgerDiff,
     UpdateError,
+    compare_ledgers,
+    format_ledger_diff,
     format_plan,
     plan_update,
     read_existing,
@@ -212,6 +216,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="地域では引けない指定を一覧から台帳へ回収する (ADR 0017)",
     )
 
+    compare = subparsers.add_parser(
+        "compare-ledgers",
+        help="前回の台帳と今回をバイト単位で突き合わせる (ADR 0020)",
+        description="相手先へは一切アクセスしない。手元の CSV どうしを比べるだけ。",
+    )
+    _target_options(compare)
+    compare.add_argument(
+        "--previous", type=Path, required=True, help="前回の台帳ディレクトリ (ledger/)"
+    )
+    compare.add_argument(
+        "--json", type=Path, help="結果を JSON で書き出す先 (ワークフローが分岐に使う)"
+    )
+
     detail = subparsers.add_parser("fetch-detail", help="台帳の各行から詳細ページを取得する")
     _target_options(detail)
     _access_options(detail)
@@ -240,17 +257,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     update = subparsers.add_parser(
         "update-records",
-        help="前回の出力と台帳を突き合わせ、差分だけ取り直して書き直す (ADR 0018)",
-        description="月次の差分更新。先に fetch-ledger で台帳を取り直しておく。",
+        help="前回の出力と台帳を突き合わせ、差分だけ取り直して書き直す (ADR 0018 / ADR 0020)",
+        description="週次の差分更新。先に fetch-ledger で台帳を取り直しておく。",
     )
     _target_options(update)
     _access_options(update, resumable=False)
     _concurrency_option(update)
     _output_dir_option(update)
     update.add_argument(
-        "--month",
-        type=_month,
-        help="巡回の枠に使う月 (既定: 実行月)。全体の 1/12 を毎月取り直す",
+        "--slot",
+        type=_slot,
+        help=f"巡回の枠 1〜{ROTATION_SLOTS} (既定: 実行週の ISO 週番号)。"
+        f"全体の 1/{ROTATION_SLOTS} を毎週取り直す",
+    )
+    update.add_argument(
+        "--previous-ledger",
+        type=Path,
+        help="前回の台帳ディレクトリ。渡すと CSV 同士を突き合わせて変更を見つける",
     )
     update.add_argument(
         "--dry-run",
@@ -275,11 +298,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _month(value: str) -> int:
+def _slot(value: str) -> int:
     number = int(value)
-    if not 1 <= number <= ROTATION_MONTHS:
-        raise argparse.ArgumentTypeError(f"月は 1〜{ROTATION_MONTHS} にする")
+    if not 1 <= number <= ROTATION_SLOTS:
+        raise argparse.ArgumentTypeError(f"巡回の枠は 1〜{ROTATION_SLOTS} にする")
     return number
+
+
+def _slot_of(now: datetime) -> int:
+    """実行日の巡回の枠 (1〜52)。
+
+    **日本時間の ISO 週で決める。** 年をまたいでも連続し、週の切れ目が月曜に揃う
+    (週次の実行と枠が 1 対 1 で対応する)。53 週ある年は最後の週が 1 番と重なり、
+    その年だけ 1 番の枠が 2 回当たる — 取り直しが 1 回増えるだけなので許容する。
+    """
+    return (now.astimezone(JST).isocalendar().week - 1) % ROTATION_SLOTS + 1
 
 
 def _selected[Item: (Category, Area)](
@@ -307,6 +340,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     categories = _selected(getattr(args, "categories", None), TARGET_CATEGORIES, "code")
     areas = _selected(getattr(args, "areas", None), SEARCH_AREAS, "name")
 
+    if args.command == "compare-ledgers":
+        return _run_compare(args, ledger_cache, categories)
     if args.command.endswith("-ledger"):
         return _run_ledger(args, ledger_cache, categories, areas)
     if args.command == "audit-listing":
@@ -318,6 +353,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "render-readme":
         return _run_render_readme(args)
     return _run_detail(args, ledger_cache, categories, areas)
+
+
+def _run_compare(
+    args: argparse.Namespace, cache: LedgerCache, categories: Sequence[Category]
+) -> int:
+    """前回の台帳と今回を突き合わせて報告する。
+
+    **相手先へは出ない。** 手元の CSV どうしを比べるだけなので、週次の実行が
+    「台帳を取り直す必要があるか」を決めるのにも使える。
+    """
+    diff = compare_ledgers(args.previous, cache.ledger_dir, categories)
+    print(format_ledger_diff(diff))
+    if args.json:
+        payload = {
+            "changed": bool(diff.changed_files),
+            "compared_files": diff.compared_files,
+            "changed_files": list(diff.changed_files),
+            "changed_records": {key: list(columns) for key, columns in diff.changed.items()},
+        }
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    return 0
 
 
 def _run_ledger(
@@ -454,11 +513,23 @@ def _run_update(
         return 1
 
     now = datetime.now(UTC)
-    month = args.month or now.astimezone(JST).month
+    slot = args.slot or _slot_of(now)
+    # 前回の台帳があれば CSV 同士を突き合わせる (ADR 0020)。無くても追加・削除は
+    # 出力との突き合わせで分かるので、落ちるのは「値が変わった」の検出だけ。
+    diff: LedgerDiff | None = None
+    if args.previous_ledger:
+        diff = compare_ledgers(args.previous_ledger, ledger_cache.ledger_dir, categories)
+        print(format_ledger_diff(diff))
+    else:
+        logger.warning(
+            "前回の台帳が渡されていない。台帳の値が変わったぶんは見つけられない "
+            "(追加・削除と巡回はそのまま働く)"
+        )
     plan = plan_update(
         existing,
         read_ledger_rows(ledger_cache, categories, areas),
-        slot=month - 1,
+        diff=diff,
+        slot=slot - 1,
         complete_categories={
             summary.category.code for summary in summaries if summary.looks_complete
         },
@@ -518,7 +589,7 @@ def _run_render_readme(args: argparse.Namespace) -> int:
     """外部へも相手先へも出ない。書き出し済みのデータと README だけを読む。
 
     ``--check`` であるべき表を出力するのは、月次のドリフト検知が結果をそのまま
-    Issue に載せられるようにするため (``.github/workflows/monthly.yml``)。
+    Issue に載せられるようにするため (``.github/workflows/weekly.yml``)。
     """
     try:
         block = render_block(read_counts(args.output_dir))

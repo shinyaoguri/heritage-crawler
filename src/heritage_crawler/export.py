@@ -83,10 +83,18 @@ class Reuse:
     """
 
     accessed_at: str = ""
-    """利用日にする日時 (ISO 8601)。
+    """行が変わったデータセットの利用日にする日時 (ISO 8601)。
 
-    差分更新では**実行日**が正しい (ADR 0018)。既存の行がいつ取得されたかは
-    出力から分からず、台帳は毎月まるごと取り直しているため。
+    取り直したぶんの取得日時が分からない場合の拠りどころで、実行日を渡す。
+    """
+
+    accessed_dates: Mapping[str, str] = field(default_factory=dict)
+    """リポジトリ名 → 前回の ``meta.json`` の利用日 (``YYYY-MM-DD``)。
+
+    **行が 1 つも変わらなかったデータセットは、この日付を据え置く** (ADR 0020)。
+    利用日は「そのデータを取り出した日」なので、取り出し直していない回に動かす
+    理由が無い。据え置けば `meta.json` も 1 バイトも変わらず、確認しただけの回に
+    コミットが立たない。
     """
 
 
@@ -143,22 +151,31 @@ def build_dataset(
         report.retained += 1
 
     written: dict[Dataset, list[tuple[Area, list[dict[str, Any]]]]] = defaultdict(list)
+    # 行が 1 バイトでも動いたデータセット。利用日を据え置いてよいかの判定に使う。
+    touched: set[Dataset] = set()
     for (dataset, area), records in sorted(groups.items(), key=lambda item: _group_order(item[0])):
         path = output_path(output_dir, dataset, area)
         records.sort(key=lambda record: (record["ledger_id"], record["managed_id"]))
         lines = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+        data = lines.encode("utf-8")
+        if not path.exists() or path.read_bytes() != data:
+            touched.add(dataset)
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, lines.encode("utf-8"))
+        atomic_write(path, data)
         report.files.append(f"{path} ({len(records):,} 行)")
         written[dataset].append((area, records))
 
     version = generator_version()
     for dataset, entries in written.items():
         path = metadata_path(output_dir, dataset)
-        # 差分更新の利用日は実行日 (ADR 0018)。既存の行の取得日時は出力から
-        # 分からず、そのぶんだけ古い日付を載せると出典表記が実態とずれる。
         fetched_at = reuse.accessed_at if reuse else latest_fetch[dataset]
-        payload = build_metadata(dataset, entries, labels[dataset], fetched_at, version)
+        # **行が動いていないなら利用日も動かさない** (ADR 0020)。取り出し直して
+        # いない回に日付だけ進めると、出典表記が実態とずれるうえ、確認しただけの
+        # 回に 10 リポジトリぶんのコミットが立つ。
+        accessed = ""
+        if reuse is not None and dataset not in touched:
+            accessed = reuse.accessed_dates.get(dataset.repo, "")
+        payload = build_metadata(dataset, entries, labels[dataset], fetched_at, version, accessed)
         write_metadata(path, payload)
         report.files.append(f"{path} (利用日 {payload['source']['accessed_date']})")
 

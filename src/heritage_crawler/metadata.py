@@ -131,14 +131,19 @@ def build_metadata(
     labels: Mapping[str, str],
     fetched_at: str,
     version: str,
+    accessed: str = "",
 ) -> dict[str, Any]:
     """1 データセットぶんの ``meta.json`` を組み立てる。
 
     ``groups`` は書き出したファイルと同じ単位 (地域ごとのレコード列) で、
     並びは出力順のまま渡す。数え直すのはここだけにして、出力と件数がずれる
     余地を作らない。``fetched_at`` はそのデータセットで最も新しい取得日時。
+
+    ``accessed`` を渡すとその日付をそのまま使う。**行が 1 つも変わらなかった回に
+    前回の利用日を据え置く**ための口で (ADR 0020)、据え置けば ``meta.json`` も
+    1 バイトも変わらず、意味のないコミットが立たない。
     """
-    date = accessed_date(fetched_at)
+    date = accessed or accessed_date(fetched_at)
     fields: Counter[str] = Counter()
     facets: dict[str, Counter[str]] = {key: Counter() for key in FACET_KEYS}
     files: list[dict[str, Any]] = []
