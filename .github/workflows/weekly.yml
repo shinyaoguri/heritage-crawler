@@ -92,6 +92,9 @@ jobs:
           # (ADR 0009 / ADR 0012) で、ここに書くと二重管理になる。App の
           # インストール先を絞ることで範囲を限る。
           owner: code4heritage
+          # **App が持つ権限をそのまま渡さない。** 読むだけのこの段では書き込みも
+          # 要らないが、同じトークンで後段の clone まで通すので contents に絞る。
+          permission-contents: write
 
       # 出力先の一覧はコードから出す (対応表を YAML に書き写さない)。
       - name: データリポジトリを clone (= 前回の状態)
@@ -199,6 +202,18 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # **App のトークンは 1 時間で切れる。** 取得に 30〜60 分かかるので、最初に
+      # 発行したものは push のころには期限切れになりうる。使う直前に取り直す。
+      - name: push 用のトークンを取り直す
+        id: push-token
+        if: inputs.dry-run != true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.DATA_PUSH_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
+          owner: code4heritage
+          permission-contents: write
+
       # 生成物は決定的なので、データが変わっていなければ JSON Lines は 1 バイトも
       # 動かない (ADR 0014)。**利用日も動かない** (ADR 0020) ので、確認しただけの週は
       # どのリポジトリにもコミットが立たない。
@@ -206,7 +221,7 @@ jobs:
         id: push
         if: inputs.dry-run != true
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.push-token.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           BOT: ${{ steps.token.outputs.app-slug }}[bot]
         run: |
@@ -224,6 +239,10 @@ jobs:
               summary=$(git diff --cached --shortstat)
               # 日付は日本時間で切る — 巡回の枠を決めるのも日本時間の週 (ADR 0020)
               today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+              # clone のときに埋め込んだトークンは期限切れになりうる。取り直した
+              # ものへ張り替えてから押す。
+              git remote set-url origin \
+                "https://x-access-token:${GH_TOKEN}@github.com/code4heritage/${repo}.git"
               git -c "user.name=${BOT}" \
                   -c "user.email=${BOT}@users.noreply.github.com" \
                   commit --quiet -m "chore(data): ${today} の差分を反映" \
@@ -270,10 +289,25 @@ jobs:
       # **確認した日を heritages へ渡す。** 利用日はデータを取り出した日なので、
       # 変わらない週は動かない。確かめ続けていることはサイトの「最終確認」でしか
       # 示せない。変数に残すのは、サイトのコードを直しただけの回にも表示を保つため。
+      # **サイト側へは別のトークンを使う。** データリポジトリへ押すトークンに
+      # `actions: write` を乗せない — App が持つ権限をそのまま配らず、行き先と
+      # 用途で絞る。ここでも取り直すので期限切れの心配も無い。
+      - name: サイト用のトークンを発行
+        id: site-token
+        if: inputs.dry-run != true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.DATA_PUSH_CLIENT_ID }}
+          private-key: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
+          owner: code4heritage
+          repositories: heritages
+          permission-actions: write # deliver.yml を起こす
+          permission-variables: write # 確認日を残す
+
       - name: サイトと配布物を起こす
         if: inputs.dry-run != true
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.site-token.outputs.token }}
         run: |
           set -euo pipefail
           today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
