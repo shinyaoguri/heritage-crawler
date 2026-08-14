@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: 計画だけを出す (相手先へ出ず、push もしない)
+        description: 何を取り直すかまでを見る (詳細は取らず、push もサイトの起動もしない)
         type: boolean
         default: false
       slot:
@@ -141,8 +141,10 @@ jobs:
       # 再試行 (約 2 分) では抜けられないことがあり、**60 秒の不調で 1 週ぶんの更新が
       # 飛ぶ**のは割に合わない。fetch-ledger は取得済みを飛ばして再開するので、
       # 繰り返しても取りに行くのは未取得のぶんだけ。
+      # **dry-run でも台帳は取る。** 何を取り直すかは台帳と突き合わせないと決まらず、
+      # ここを飛ばすと計画そのものが立たない。相手先へ出るのはこの 204 リクエストで、
+      # 重い詳細ページの巡回 (数百件) には進まない。
       - name: 1 段目 — 台帳 (CSV) を取り直す
-        if: inputs.dry-run != true
         run: |
           set -euo pipefail
           {
@@ -155,7 +157,7 @@ jobs:
       # **相手先へは出ない。** 手元の CSV どうしをバイト単位で比べるだけ。
       - name: 前回の台帳と突き合わせる
         id: ledger
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.found == 'true'  # dry-run でも走らせる (通信しない)
         run: |
           set -euo pipefail
           {
@@ -259,8 +261,9 @@ jobs:
 
       # **次回の基準になるので、push の成否によらず必ず残す。** ここを落とすと
       # 翌週は「前回の台帳が無い」状態になり、台帳の値の変化を拾えなくなる。
+      # dry-run でも残す — そのとき取った台帳は本物なので、次の回の基準に使える。
       - name: 今回の台帳を残す
-        if: always() && inputs.dry-run != true
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.LEDGER_ARTIFACT }}
