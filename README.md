@@ -320,7 +320,7 @@ gh workflow run reachability.yml
 **前回の台帳とバイト単位で突き合わせる** → 変わったぶんだけ詳細を取り直す →
 変わったリポジトリだけ push する
 ([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md))。
-手で押すこともできる (`dry-run` で計画だけ、`slot` で巡回の枠を指定)。
+手で押すこともできる (`dry-run` なら**台帳までは取って計画を出し**、詳細の取得と push とサイトの起動はしない。`slot` で巡回の枠を指定)。
 
 ```bash
 gh workflow run weekly.yml -f dry-run=true
