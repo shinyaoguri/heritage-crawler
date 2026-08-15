@@ -19,6 +19,7 @@ import pytest
 
 from conftest import make_csv, make_row
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, Category, datasets_for
+from heritage_crawler.detail import Presence
 from heritage_crawler.export import REMOVED_FILENAME
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.metadata import METADATA_FILENAME
@@ -34,6 +35,7 @@ from heritage_crawler.update import (
     read_existing,
     reuse_for,
     rotation_slot,
+    verify_removals,
 )
 
 ALL_CATEGORIES = {category.code for category in (REGISTERED, DESIGNATED, MONUMENTS)}
@@ -329,6 +331,131 @@ class Test計画:
 
         assert plan.is_empty
         assert not plan.refetch
+
+
+class Test存在確認で落とすかを決め直す:
+    """台帳の不在は消極的な証拠。詳細ページの返答を足して結論を決める (ADR 0021)。
+
+    | 網羅性 | 存在確認 | 落とすか | 結論 |
+    |---|---|---|---|
+    | ○ | gone | 落とす | `delisted` |
+    | ○ | alive | 落とす | `unlisted` |
+    | ○ | unknown | **落とさない** | — |
+    | × | gone | 落とす | `delisted` |
+    | × | alive / unknown | 落とさない | — |
+    """
+
+    def plan(self, presence: Presence | None, *, complete: bool = True):  # type: ignore[no-untyped-def]
+        existing = Test計画().existing()
+        plan = plan_update(
+            existing,
+            Test計画().rows(),
+            slot=0,
+            complete_categories=ALL_CATEGORIES if complete else set(),
+        )
+        # presence が None = 存在確認そのものを走らせない経路 (--dry-run など)
+        if presence is not None:
+            verify_removals(plan, {"101/gone": presence})
+        return plan, existing
+
+    def conclusion(self, plan: Any, existing: Existing) -> str | None:
+        removals = reuse_for(plan, existing, "2026-08-17T00:00:00+00:00").removals
+        return removals["101/gone"]["conclusion"] if removals else None
+
+    def test_無いと答えたら落として指定解除とする(self) -> None:
+        plan, existing = self.plan(Presence.GONE)
+
+        assert plan.removed == ["101/gone"]
+        assert self.conclusion(plan, existing) == "delisted"
+
+    def test_詳細が生きていれば落とすが結論は変える(self) -> None:
+        """台帳から外れただけで、データベースにはまだ居る状態。"""
+        plan, existing = self.plan(Presence.ALIVE)
+
+        assert plan.removed == ["101/gone"]
+        assert self.conclusion(plan, existing) == "unlisted"
+
+    def test_確かめられなければ落とさない(self) -> None:
+        """混んでいる時間帯に当たった 1 件を指定解除にしないため。翌週やり直す。"""
+        plan, _ = self.plan(Presence.UNKNOWN)
+
+        assert plan.removed == []
+        assert plan.retained == ["101/gone"]
+
+    def test_網羅性を確かめられなくても無いと答えたら落とす(self) -> None:
+        """102 は全国件数とキーの異なり数を直接比べられない。ここが唯一の証拠になる。"""
+        plan, existing = self.plan(Presence.GONE, complete=False)
+
+        assert plan.removed == ["101/gone"]
+        assert self.conclusion(plan, existing) == "delisted"
+        assert existing  # 使う
+
+    def test_網羅性も詳細も確かめられなければ残す(self) -> None:
+        plan, _ = self.plan(Presence.ALIVE, complete=False)
+
+        assert plan.removed == []
+        assert plan.retained == ["101/gone"]
+
+    def test_証拠に確認の結果が残る(self) -> None:
+        plan, existing = self.plan(Presence.GONE)
+
+        evidence = reuse_for(plan, existing, "2026-08-17T00:00:00+00:00").removals["101/gone"][
+            "evidence"
+        ]
+        assert evidence["detail_page"] == "gone"
+        assert evidence["category_complete"] is True
+
+    def test_確認しなければ結論は保留のまま(self) -> None:
+        """`--dry-run` など、通信しない経路では今までどおり落とす。"""
+        plan, existing = self.plan(None)
+
+        assert plan.removed == ["101/gone"]
+        assert self.conclusion(plan, existing) == "unverified"
+
+
+class Test格上げの見分け:
+    """101 が 102 に指定されると登録は抹消され、台帳ID が変わって別レコードになる。
+
+    手元からは「101 から 1 件消えて 102 に 1 件現れた」と見える。削除ではなく
+    価値が公認された出来事なので、「解除された」と記録してはいけない (ADR 0021)。
+    """
+
+    def existing(self) -> Existing:
+        return Existing(
+            records={
+                "101/gone": record(
+                    managed_id="gone",
+                    name="旧亀岡家住宅",
+                    latitude=36.1,
+                    longitude=140.2,
+                    address="茨城県",
+                )
+            }
+        )
+
+    def plan(self, added: Mapping[str, str]):  # type: ignore[no-untyped-def]
+        rows = [row(DESIGNATED, {"管理対象ID": "new", **added})]
+        return plan_update(
+            self.existing(), rows, slot=0, complete_categories=ALL_CATEGORIES
+        )
+
+    def test_名称と緯度経度が一致する新規があれば格上げとみなす(self) -> None:
+        plan = self.plan({"名称": "旧亀岡家住宅", "緯度": "36.1", "経度": "140.2"})
+        verify_removals(plan, {"101/gone": Presence.GONE})
+
+        removed = reuse_for(plan, self.existing(), "2026-08-17T00:00:00+00:00").removals
+
+        assert removed["101/gone"]["conclusion"] == "reclassified"
+        assert removed["101/gone"]["evidence"]["matched_elsewhere"] == ["102/new"]
+
+    def test_名称が同じでも場所が違えば別物(self) -> None:
+        """「本堂」のような名称は何十とある。名称だけでは同じものと言えない。"""
+        plan = self.plan({"名称": "旧亀岡家住宅", "緯度": "35.0", "経度": "139.0"})
+        verify_removals(plan, {"101/gone": Presence.GONE})
+
+        removed = reuse_for(plan, self.existing(), "2026-08-17T00:00:00+00:00").removals
+
+        assert removed["101/gone"]["conclusion"] == "delisted"
 
 
 class Test使い回すぶん:
