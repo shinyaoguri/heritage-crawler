@@ -165,6 +165,9 @@ def build_dataset(
         report.files.append(f"{path} ({len(records):,} 行)")
         written[dataset].append((area, records))
 
+    # **消したファイルも「行が動いた」** — 利用日を据え置くとその週だけ日付が止まる。
+    touched |= _settle_stale_files(output_dir, categories, groups, report, areas=areas)
+
     version = generator_version()
     for dataset, entries in written.items():
         path = metadata_path(output_dir, dataset)
@@ -179,7 +182,6 @@ def build_dataset(
         write_metadata(path, payload)
         report.files.append(f"{path} (利用日 {payload['source']['accessed_date']})")
 
-    _note_stale_files(output_dir, categories, groups, report)
     return report
 
 
@@ -274,25 +276,47 @@ def _group_order(group: tuple[Dataset, Area]) -> tuple[int, str]:
     return (TARGET_DATASETS.index(dataset), area.code)
 
 
-def _note_stale_files(
+def _settle_stale_files(
     output_dir: Path,
     categories: Sequence[Category],
     groups: dict[tuple[Dataset, Area], list[dict[str, Any]]],
     report: BuildReport,
-) -> None:
-    """今回書かなかった既存ファイルを報せる。
+    *,
+    areas: Sequence[Area],
+) -> set[Dataset]:
+    """今回書かなかった既存ファイルを、消すか報せるかに振り分ける (#57)。
 
-    地域を絞って走らせるのは普通のことなので消しはしない。ただし黙っていると、
-    都道府県の振り分けが変わったときに古い行が残り続ける。
+    **0 件の県にはそもそもファイルが無い**のが出力の形 (ADR 0009 / ADR 0013)。
+    行が全部無くなったのに書き直されないと、解除された指定が残り続ける。
+
+    ただし 0 件の理由は「データが無くなった」とは限らず、「取れていない」ことも
+    ある。**断言できる実行でだけ消す** — それ以外は今までどおり報せるに留める。
+    消したデータセットを返すのは、利用日の据え置き判定に使うため (ADR 0020)。
     """
     written = {output_path(output_dir, dataset, area) for dataset, area in groups}
+    # ① 全域を見ていない実行では、0 件の県と見ていない県の区別が付かない。
+    # ② 詳細を取りこぼした実行では、行が落ちただけの県を消しかねない
+    #    (200 で返るエラーページを掴んだ回も同じ。ADR 0011)。
+    decisive = (
+        set(areas) >= set(SEARCH_AREAS) and not report.missing_html and not report.parse_failures
+    )
+    produced = {dataset for dataset, _ in groups}
+    emptied: set[Dataset] = set()
     for dataset in datasets_for(categories):
         directory = output_dir / dataset.repo / "data"
         if not directory.is_dir():
             continue
-        report.stale_files.extend(
-            str(path) for path in sorted(directory.glob("*.jsonl")) if path not in written
-        )
+        stale = [path for path in sorted(directory.glob("*.jsonl")) if path not in written]
+        # ③ その種別に 1 件も書いていない実行 (台帳の取得が途中で止まった等) では、
+        #    リポジトリを丸ごと空にしてしまう。台帳に行が無いと ② では捕まらない。
+        if decisive and dataset in produced:
+            for path in stale:
+                path.unlink()
+                report.removed_files.append(str(path))
+                emptied.add(dataset)
+            continue
+        report.stale_files.extend(str(path) for path in stale)
+    return emptied
 
 
 def format_report(report: BuildReport) -> str:
@@ -321,6 +345,7 @@ def format_report(report: BuildReport) -> str:
         lines.append(f"都道府県を所在地から決めた: {report.prefecture_from_address:,} 件")
     if report.prefecture_unresolved:
         lines.append(f"都道府県が 1 つに決まらなかった: {report.prefecture_unresolved:,} 件")
+    lines.extend(f"  0 件になったので消した: {path}" for path in report.removed_files)
     lines.extend(f"  今回書かなかった既存ファイル: {path}" for path in report.stale_files)
     return "\n".join(lines)
 

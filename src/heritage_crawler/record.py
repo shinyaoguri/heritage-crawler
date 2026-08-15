@@ -349,6 +349,8 @@ class BuildReport:
     """種別が読めず、どのリポジトリへも書けなかったもの (401 に受け皿は無い。ADR 0012)。"""
     files: list[str] = field(default_factory=list)
     stale_files: list[str] = field(default_factory=list)
+    removed_files: list[str] = field(default_factory=list)
+    """行が 0 件になったので消したファイル (#57)。異常ではないが、黙って消さない。"""
 
     @property
     def has_anomalies(self) -> bool:
