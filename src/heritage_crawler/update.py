@@ -37,9 +37,9 @@ from typing import Any, Final
 
 from heritage_crawler.catalog import CATEGORIES_BY_CODE, Category, Dataset
 from heritage_crawler.detail import Target
-from heritage_crawler.export import Reuse
+from heritage_crawler.export import REMOVED_FILENAME, Reuse, removal_entry
 from heritage_crawler.ledger import EXPECTED_CSV_HEADER, LedgerRow, read_csv_rows
-from heritage_crawler.metadata import METADATA_FILENAME
+from heritage_crawler.metadata import METADATA_FILENAME, accessed_date
 
 logger = logging.getLogger(__name__)
 
@@ -181,11 +181,25 @@ class Existing:
     401 の複合指定は 2 つのリポジトリに同じ行が出るので (ADR 0012)、キーで畳む。
     """
 
+    repos: dict[str, set[str]] = field(default_factory=dict)
+    """``(台帳ID, 管理対象ID)`` → 前回そのキーが居たリポジトリ名。
+
+    ``records`` はキーで畳むので居場所が消える。**落とした行をどの
+    ``removed.jsonl`` へ書くか**と、振り分けが変わった行の検出に要る (ADR 0021)。
+    """
+
     labels: dict[str, dict[str, str]] = field(default_factory=dict)
     """リポジトリ名 → ``meta.json`` の表示名。"""
 
     accessed_dates: dict[str, str] = field(default_factory=dict)
     """リポジトリ名 → ``meta.json`` の利用日。行が動かなかった回に据え置く (ADR 0020)。"""
+
+    removed: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    """リポジトリ名 → キー → 前回の ``removed.jsonl`` の 1 行 (ADR 0021)。
+
+    **前回の記録をそのまま引き継ぐ**ために読む。消えたままの週に書き直すと
+    ``missing_since`` が動いて「いつ消えたか」が失われ、記録が毎週揺れる。
+    """
 
     files: int = 0
 
@@ -202,35 +216,65 @@ def read_existing(output_dir: Path, datasets: Sequence[Dataset]) -> Existing:
     壊れているときは進まない方がよい。
     """
     records: dict[str, dict[str, Any]] = {}
+    repos: dict[str, set[str]] = {}
     labels: dict[str, dict[str, str]] = {}
     accessed: dict[str, str] = {}
+    removed: dict[str, dict[str, dict[str, Any]]] = {}
     files = 0
     for dataset in datasets:
         directory = output_dir / dataset.repo / "data"
         for path in sorted(directory.glob("*.jsonl")) if directory.is_dir() else []:
             files += 1
-            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    key = record_key(record)
-                except (json.JSONDecodeError, KeyError, TypeError) as error:
-                    raise UpdateError(f"{path} の {number} 行目を読めない: {error}") from error
+            for number, key, record in _read_jsonl(path):
                 if str(record["ledger_id"]) not in CATEGORIES_BY_CODE:
                     # 台帳ID から分類を戻せないと、消えたときの扱いも書き先も決まらない。
                     raise UpdateError(
                         f"{path} の {number} 行目の台帳ID が知らない分類: {record['ledger_id']!r}"
                     )
                 records.setdefault(key, record)
+                repos.setdefault(key, set()).add(dataset.repo)
         meta = _read_metadata(output_dir / dataset.repo / METADATA_FILENAME)
         labels[dataset.repo] = {
             str(key): str(value) for key, value in meta.get("labels", {}).items()
         }
         if date := meta.get("source", {}).get("accessed_date"):
             accessed[dataset.repo] = str(date)
-    logger.info("前回の出力を読んだ: %d 件 / %d ファイル", len(records), files)
-    return Existing(records=records, labels=labels, accessed_dates=accessed, files=files)
+        path = output_dir / dataset.repo / REMOVED_FILENAME
+        removed[dataset.repo] = (
+            {key: entry for _, key, entry in _read_jsonl(path)} if path.exists() else {}
+        )
+    logger.info(
+        "前回の出力を読んだ: %d 件 / %d ファイル (削除の記録 %d 件)",
+        len(records),
+        files,
+        sum(len(entries) for entries in removed.values()),
+    )
+    return Existing(
+        records=records,
+        repos=repos,
+        labels=labels,
+        accessed_dates=accessed,
+        removed=removed,
+        files=files,
+    )
+
+
+def _read_jsonl(path: Path) -> list[tuple[int, str, dict[str, Any]]]:
+    """JSON Lines を ``(行番号, キー, 行)`` で読む。読めない行は例外にする。
+
+    **黙って飛ばさない。** 出力の行なら「台帳にあって手元に無い」= 新規に化け、
+    削除の記録なら消えた行が記録から落ちる。どちらも差分の基準が壊れている。
+    """
+    found: list[tuple[int, str, dict[str, Any]]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+            found.append((number, record_key(record), record))
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise UpdateError(f"{path} の {number} 行目を読めない: {error}") from error
+    return found
 
 
 def _read_metadata(path: Path) -> dict[str, Any]:
@@ -343,12 +387,47 @@ def plan_update(
     return plan
 
 
+UNVERIFIED: Final = "unverified"
+"""詳細ページを確かめていないときの結論 (ADR 0021)。
+
+不在は*消極的*な証拠でしかない。積極的な返答 (詳細ページの「必要な情報が
+足りません」) をまだ足していないので、確実だとは書かない。
+"""
+
+
+def _removals(plan: UpdatePlan, existing: Existing, today: str) -> dict[str, dict[str, Any]]:
+    """落としたキー → ``removed.jsonl`` の 1 行。
+
+    ``plan.retained`` は入れない — あれは「消したかどうかを断じられない」一時的な
+    状態で、平時は 0 件、取得が転んだ週にだけ現れて翌週消える。削除されていない行を
+    削除リストに書くと名前と実態がずれ、恒久ファイルが毎週揺れる (ADR 0021)。
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    for key in plan.removed:
+        record = existing.records[key]
+        # 利用日は「そのデータを取り出した日」なので、前回の meta.json が
+        # そのまま「最後に台帳で見た日」になる (ADR 0014 / ADR 0020)。
+        seen = (
+            existing.accessed_dates.get(repo, "") for repo in sorted(existing.repos.get(key, ()))
+        )
+        entries[key] = removal_entry(
+            record,
+            conclusion=UNVERIFIED,
+            last_seen_date=max(seen, default=""),
+            missing_since=today,
+        )
+    return entries
+
+
 def reuse_for(plan: UpdatePlan, existing: Existing, accessed_at: str) -> Reuse:
     """出力層へ渡す「使い回すぶん」を作る (ADR 0018)。
 
     **落とすキーだけを外す。** 残りは全部渡し、キャッシュに新しい詳細があるかは
     出力層が見る — 取り直したはずの 1 件が取得に失敗しても、前回の行が残って
     行の消失にはならない。
+
+    落としたキーは捨てずに ``removals`` として渡す (ADR 0021)。どのリポジトリの
+    ``removed.jsonl`` へ書くかは前回の居場所で決まるので、``repos`` も一緒に渡す。
     """
     dropped = set(plan.removed)
     records = {key: record for key, record in existing.records.items() if key not in dropped}
@@ -358,6 +437,9 @@ def reuse_for(plan: UpdatePlan, existing: Existing, accessed_at: str) -> Reuse:
         labels=existing.labels,
         accessed_at=accessed_at,
         accessed_dates=existing.accessed_dates,
+        removals=_removals(plan, existing, accessed_date(accessed_at)),
+        previous_repos=existing.repos,
+        previous_removed=existing.removed,
     )
 
 

@@ -167,6 +167,9 @@
   この約束が無いと、スキーマ変更のたびに静かに失われる
   ([0006](0006-run-initial-crawl-locally-updates-on-actions.md) の分担で、全件再組み立ては
   ローカルに残っている)
+- **`meta.json` には削除件数を載せない。** 載せると `build-records` が
+  `removed.jsonl` を読まない限り件数がドリフトし、上の「触らない」約束と両立しない。
+  件数はファイル自身が持っていれば足りる
 - **`code4heritage/heritages` は変更しない。** ZIP にもサイトにも出ない。ただし配布物は
   「展開するとそのデータリポジトリの中身そのものになる」ことを意図しているので
   ([0019](0019-distribute-archives-through-releases.md))、後から入れたくなる可能性はある。

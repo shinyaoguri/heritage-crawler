@@ -19,6 +19,7 @@ import pytest
 
 from conftest import make_csv, make_row
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, Category, datasets_for
+from heritage_crawler.export import REMOVED_FILENAME
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.metadata import METADATA_FILENAME
 from heritage_crawler.update import (
@@ -57,6 +58,16 @@ def write_records(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records), encoding="utf-8"
+    )
+    return path
+
+
+def write_removed(output_dir: Path, repo: str, entries: list[dict[str, Any]]) -> Path:
+    """データリポジトリのルートに置く削除の記録 (ADR 0021)。"""
+    path = output_dir / repo / REMOVED_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in entries), encoding="utf-8"
     )
     return path
 
@@ -189,6 +200,37 @@ class Test前回の出力の読み戻し:
         assert list(existing.records) == ["401/712"]
         assert existing.files == 2
 
+    def test_どのリポジトリに居たかを覚える(self, tmp_path: Path) -> None:
+        """落とした行をどの `removed.jsonl` へ書くかは、前回の居場所で決まる (ADR 0021)。
+
+        `records` はキーで畳むので、複合指定がどちらのリポジトリに居たかが消える。
+        """
+        same = record(ledger_id="401", managed_id="712", types=["特別名勝", "特別史跡"])
+        for repo in ("special-historic-sites", "special-places-of-scenic-beauty"):
+            write_records(tmp_path, repo, "13_tokyo.jsonl", [same])
+        write_records(tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="401")])
+
+        existing = read_existing(tmp_path, datasets_for([MONUMENTS]))
+
+        assert existing.repos["401/712"] == {
+            "special-historic-sites",
+            "special-places-of-scenic-beauty",
+        }
+        assert existing.repos["401/1"] == {"historic-sites"}
+
+    def test_前回の削除の記録も読む(self, tmp_path: Path) -> None:
+        """`missing_since` を据え置くには、前回の記録が要る (毎回今日にすると揺れる)。"""
+        write_records(tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="401")])
+        write_removed(
+            tmp_path,
+            "historic-sites",
+            [{"ledger_id": "401", "managed_id": "9", "missing_since": "2026-08-03"}],
+        )
+
+        existing = read_existing(tmp_path, datasets_for([MONUMENTS]))
+
+        assert existing.removed["historic-sites"]["401/9"]["missing_since"] == "2026-08-03"
+
     def test_出力が無ければ空(self, tmp_path: Path) -> None:
         assert read_existing(tmp_path, datasets_for([MONUMENTS])).records == {}
 
@@ -315,6 +357,44 @@ class Test使い回すぶん:
 
         assert [item["managed_id"] for item in reuse.retained] == ["gone"]
         assert "101/gone" in reuse.records
+
+    def test_落とした行を証拠つきで渡す(self) -> None:
+        """出力から落とすだけでは記録が残らない (ADR 0021)。
+
+        判定を 1 語に潰さず、観測した証拠を並べる。PR の段階では詳細ページを
+        確かめていないので `detail_page` は `unknown`、結論は `unverified`。
+        """
+        existing = Existing(
+            records=Test計画().existing().records,
+            repos={"101/gone": {"registered-tangible-cultural-properties"}},
+            accessed_dates={"registered-tangible-cultural-properties": "2026-08-10"},
+        )
+        plan = plan_update(
+            existing, Test計画().rows(), slot=0, complete_categories=ALL_CATEGORIES
+        )
+
+        reuse = reuse_for(plan, existing, "2026-08-17T00:00:00+00:00")
+
+        assert list(reuse.removals) == ["101/gone"]
+        removed = reuse.removals["101/gone"]
+        assert removed["managed_id"] == "gone"
+        assert removed["name"] == "消えた"
+        assert removed["last_seen_date"] == "2026-08-10"
+        assert removed["missing_since"] == "2026-08-17"
+        assert removed["conclusion"] == "unverified"
+        assert removed["evidence"] == {
+            "absent_from_ledger": True,
+            "category_complete": True,
+            "detail_page": "unknown",
+            "matched_elsewhere": None,
+        }
+
+    def test_残した行は削除の記録に入れない(self) -> None:
+        """`retained` は「消したかどうかを断じられない」一時的な状態 (ADR 0021)。"""
+        existing = Test計画().existing()
+        plan = plan_update(existing, Test計画().rows(), slot=0, complete_categories=set())
+
+        assert reuse_for(plan, existing, "2026-08-17T00:00:00+00:00").removals == {}
 
     def test_取り直す行も渡す(self) -> None:
         """取得に失敗しても前回の行が残るようにする — 失敗を行の消失にしない。"""
