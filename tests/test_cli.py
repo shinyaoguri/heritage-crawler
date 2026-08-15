@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import area_named, fixture, put_detail, put_ledger
+from heritage_crawler import cli
 from heritage_crawler.cache import DetailCache, LedgerCache
 from heritage_crawler.catalog import (
     SEARCH_AREAS,
@@ -18,7 +19,11 @@ from heritage_crawler.catalog import (
     TARGET_DATASETS,
 )
 from heritage_crawler.cli import build_parser, main
+from heritage_crawler.detail import Presence
 from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
+from heritage_crawler.update import ROTATION_SLOTS, rotation_slot
+
+PRESERVATION_DISTRICTS = "important-preservation-districts-for-groups-of-traditional-buildings"
 
 
 def _help_of(command: str, capsys: pytest.CaptureFixture[str]) -> str:
@@ -244,6 +249,54 @@ def test_前回の台帳を渡すと値の変化を見つける(
     printed = capsys.readouterr().out
     assert "1 ファイルが前回と違う" in printed
     assert "台帳の値が変わった 1" in printed
+
+
+def test_存在を確かめてから落とす(
+    cache_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """落とすかどうかを詳細ページの返答で決め直す配線 (ADR 0021)。
+
+    **相手先へは出ない** — 存在確認だけを身代わりに差し替える。巡回に当たらない枠を
+    選んであるので、取得そのものは 1 件も走らない。
+
+    ここでは全国件数を記録していないので 103 の網羅性は確かめられない状態にある。
+    それでも「無い」と答えたものは落とす — 102 と同じ、集計では確かめられない
+    分類での振る舞いをそのまま試している。
+    """
+    ledger = LedgerCache(cache_dir)
+    put_ledger(ledger, SELECTED, area_named("京都府"), ["16", "17"])
+    for managed_id in ("16", "17"):
+        put_detail(DetailCache(cache_dir), SELECTED, managed_id, fixture("detail_103.html"))
+    out = tmp_path / "data"
+    assert main(["--cache-dir", str(cache_dir), "build-records", "--output-dir", str(out)]) == 0
+
+    put_ledger(ledger, SELECTED, area_named("京都府"), ["16"])  # 17 が台帳から消えた
+    monkeypatch.setattr(cli, "probe_presence", lambda *_, **__: {"103/17": Presence.GONE})
+    slot = (rotation_slot("103/16") + 2) % ROTATION_SLOTS + 1
+
+    status = main(
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "update-records",
+            "--output-dir",
+            str(out),
+            "--slot",
+            str(slot),
+        ]
+    )
+
+    assert status == 0
+    removed = [
+        json.loads(line)
+        for line in (out / PRESERVATION_DISTRICTS / "removed.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [entry["managed_id"] for entry in removed] == ["17"]
+    assert removed[0]["conclusion"] == "delisted"
+    assert removed[0]["evidence"]["detail_page"] == "gone"
+    assert removed[0]["evidence"]["category_complete"] is False
 
 
 def test_前回の台帳が無ければ値の変化は見つけられない(

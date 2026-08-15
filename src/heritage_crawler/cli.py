@@ -37,6 +37,7 @@ from heritage_crawler.detail import (
     Target,
     fetch_details,
     format_detail_summary,
+    probe_presence,
     read_targets,
     recheck_cache,
     summarize_details,
@@ -72,12 +73,15 @@ from heritage_crawler.update import (
     ROTATION_SLOTS,
     LedgerDiff,
     UpdateError,
+    candidates,
     compare_ledgers,
     format_ledger_diff,
     format_plan,
+    format_verification,
     plan_update,
     read_existing,
     reuse_for,
+    verify_removals,
 )
 
 CONTACT_ENV: Final = "HERITAGE_CRAWLER_CONTACT"
@@ -549,13 +553,14 @@ def _run_update(
         logger.info("取り直すものも落とすものも無い")
 
     detail_cache = DetailCache(args.cache_dir)
+    limiter = RateLimiter(args.interval)
+
+    def client() -> PoliteClient:
+        return PoliteClient(contact=args.contact, timeout=args.timeout, limiter=limiter)
+
     if plan.targets:
         # 取り直すと決めたぶんは、キャッシュに残っていても取り直す (それが目的)。
-        limiter = RateLimiter(args.interval)
-        fetchers = [
-            PoliteClient(contact=args.contact, timeout=args.timeout, limiter=limiter)
-            for _ in range(args.concurrency)
-        ]
+        fetchers = [client() for _ in range(args.concurrency)]
         try:
             fetch_details(fetchers, detail_cache, plan.targets, force=True)
         except KeyboardInterrupt:
@@ -572,6 +577,17 @@ def _run_update(
             if detail_key(entry.daichou_id, entry.kanri_taishou_id) in wanted
         ]
         print(format_detail_summary(summarize_details(detail_cache, plan.targets), failures))
+
+    # 落とす前に、その 1 件がデータベースから消えているかを直接確かめる (ADR 0021)。
+    # 台帳からの不在は消極的な証拠でしかなく、とくに 102 は網羅性を確かめられない。
+    if (probes := candidates(plan, existing)) and plan.control is not None:
+        try:
+            found = probe_presence(client(), probes, plan.control)
+        except KeyboardInterrupt:
+            logger.warning("中断した。書き出していないので、同じコマンドでやり直せる")
+            return 130
+        verify_removals(plan, found)
+        print(format_verification(plan))
 
     report = build_dataset(
         ledger_cache,

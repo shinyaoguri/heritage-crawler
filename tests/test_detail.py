@@ -15,10 +15,12 @@ from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, Ledger
 from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
 from heritage_crawler.detail import (
     DetailError,
+    Presence,
     Target,
     fetch_details,
     format_detail_summary,
     format_duration,
+    probe_presence,
     read_targets,
     recheck_cache,
     summarize_details,
@@ -31,6 +33,12 @@ CATEGORY = TARGET_CATEGORIES[1]  # 102
 HTML = (
     "<html><body>琵琶湖疏水施設 第一トンネル" + "あ" * 20_000 + "</body></html>"
 ).encode()
+
+MISSING = "<html><body>必要な情報が足りません。</body></html>".encode()
+"""**そのレコードが無いときの応答** (2026-08-16 実測。3 KB 弱)。
+
+同じ文言が過負荷のときにも返る (ADR 0011)。だから対照群が要る。
+"""
 
 
 def csv_row(kanri_taishou_id: str, name: str = "琵琶湖疏水施設", ridge: str = "") -> list[str]:
@@ -289,6 +297,80 @@ def test_取得状況を報告する(cache_dir: Path) -> None:
     printed = format_detail_summary(summary, DetailCache(cache_dir).failures())
     assert "対象 3 件" in printed
     assert "--retry-failed" in printed
+
+
+class Test存在の確認:
+    """削除候補が本当にデータベースから消えているかを直接確かめる (ADR 0021)。
+
+    **「必要な情報が足りません」は過負荷のときにも返る** (ADR 0011 の 4 req/s 実測)。
+    「そのレコードは無い」と「いま答えられない」が同じ文言なので、**対照群**
+    — 実在すると分かっているキー — を検査の前後に引いて時制を担保する。
+    """
+
+    control = Target(CATEGORY.code, "control", "対照群")
+    gone = Target(CATEGORY.code, "9999", "消えたはず")
+    alive = Target(CATEGORY.code, "2594", "生きている")
+
+    def fetcher(self, **bodies: bytes) -> FakeFetcher:
+        return FakeFetcher(
+            {Target(CATEGORY.code, key, "").url: body for key, body in bodies.items()}
+        )
+
+    def test_対照群が正常なら無いという返答を信じる(self) -> None:
+        fetcher = self.fetcher(control=HTML, **{"9999": MISSING, "2594": HTML})
+
+        found = probe_presence(fetcher, [self.gone, self.alive], self.control)
+
+        assert found == {
+            f"{CATEGORY.code}/9999": Presence.GONE,
+            f"{CATEGORY.code}/2594": Presence.ALIVE,
+        }
+        # 対照群は前後で 1 回ずつ (2 件の検査に対して 4 リクエスト)
+        assert len(fetcher.urls()) == 4
+
+    def test_対照群が壊れていたら検査そのものをしない(self) -> None:
+        """混んでいる時間帯に当たった 1 件を「削除された」と記録しないため。"""
+        fetcher = self.fetcher(control=MISSING, **{"9999": MISSING})
+
+        found = probe_presence(fetcher, [self.gone], self.control)
+
+        assert found == {f"{CATEGORY.code}/9999": Presence.UNKNOWN}
+        # 相手が答えられない時間帯に、無駄なリクエストを積まない
+        assert len(fetcher.urls()) == 1
+
+    def test_検査の後で対照群が崩れたら結論を取り下げる(self) -> None:
+        """検査中に相手が混み始めた回。前の対照群だけでは時制を担保できない。"""
+        answers = iter([HTML, MISSING])
+        fetcher = FakeFetcher(
+            {
+                self.control.url: lambda _: next(answers),
+                self.gone.url: MISSING,
+            }
+        )
+
+        found = probe_presence(fetcher, [self.gone], self.control)
+
+        assert found == {f"{CATEGORY.code}/9999": Presence.UNKNOWN}
+
+    def test_取得に失敗したものは分からないままにする(self) -> None:
+        fetcher = self.fetcher(control=HTML)  # 9999 の応答を用意していない
+
+        found = probe_presence(fetcher, [self.gone], self.control)
+
+        assert found == {f"{CATEGORY.code}/9999": Presence.UNKNOWN}
+
+    def test_キャッシュには何も書かない(self, cache_dir: Path) -> None:
+        """`fetch_details` を流用すると、消えた行が「失敗」として積まれる。
+
+        `--retry-failed` が毎週それを叩き、連続失敗の打ち切りが誤発動する。
+        """
+        cache = DetailCache(cache_dir)
+        fetcher = self.fetcher(control=HTML, **{"9999": MISSING})
+
+        probe_presence(fetcher, [self.gone], self.control)
+
+        assert DetailCache(cache_dir).entries == {}
+        assert not cache.manifest_path.exists()
 
 
 def test_台帳が空なら先に何をすべきか言う() -> None:

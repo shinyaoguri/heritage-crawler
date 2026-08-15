@@ -29,14 +29,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Container, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final
 
 from heritage_crawler.catalog import CATEGORIES_BY_CODE, Category, Dataset
-from heritage_crawler.detail import Target
+from heritage_crawler.detail import Presence, Target
 from heritage_crawler.export import REMOVED_FILENAME, Reuse, removal_entry
 from heritage_crawler.ledger import EXPECTED_CSV_HEADER, LedgerRow, read_csv_rows
 from heritage_crawler.metadata import METADATA_FILENAME, accessed_date
@@ -320,9 +320,29 @@ class UpdatePlan:
     """台帳から消え、出力からも落とすキー (指定解除)。"""
 
     retained: list[str] = field(default_factory=list)
-    """台帳から消えたが、網羅性を確かめられないので残すキー。"""
+    """台帳から消えたが、確かめられないので残すキー。"""
 
     unchanged: int = 0
+
+    complete: frozenset[str] = frozenset()
+    """網羅性を確かめられた分類コード。落とすかどうかの判断に後から使う。"""
+
+    control: Target | None = None
+    """存在確認の対照群 — **実在すると分かっているキー** (ADR 0021)。
+
+    台帳にある行から決める。キーの小さいものを選ぶのは、取得順にも都道府県にも
+    寄らせないため (毎週同じ 1 件になる)。
+    """
+
+    added: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    """新規指定の同定情報 → キー。**格上げを削除と読み違えない**ために持つ。
+
+    101 が 102 に指定されると登録は抹消され、台帳ID が変わって別レコードになる
+    (ADR 0021)。手元からは「101 から消えて 102 に現れた」と見える。
+    """
+
+    presence: dict[str, Presence] = field(default_factory=dict)
+    """キー → 詳細ページに問い合わせた結果 (``verify_removals`` が入れる)。"""
 
     @property
     def targets(self) -> list[Target]:
@@ -344,7 +364,7 @@ def plan_update(
     rows: Iterable[LedgerRow],
     *,
     slot: int,
-    complete_categories: Container[str],
+    complete_categories: Collection[str],
     diff: LedgerDiff | None = None,
 ) -> UpdatePlan:
     """前回の出力と台帳を突き合わせて、今週の計画を立てる。
@@ -356,7 +376,7 @@ def plan_update(
     追加と削除は台帳と出力を比べれば分かる。落ちるのは「台帳の値が変わった」だけで、
     それも巡回でいずれ拾う。
     """
-    plan = UpdatePlan(slot=slot)
+    plan = UpdatePlan(slot=slot, complete=frozenset(complete_categories))
     changed = diff.changed if diff else {}
     seen: set[str] = set()
 
@@ -369,9 +389,13 @@ def plan_update(
             kanri_taishou_id=row.get("管理対象ID"),
             name=" ".join(part for part in (row.get("名称"), row.get("棟名")) if part),
         )
+        if plan.control is None or row.key < plan.control.key:
+            plan.control = target
         record = existing.records.get(row.key)
         if record is None:
             plan.refetch.append(Refetch(target, Reason.ADDED))
+            if identity := _identity(target.name, row.get("緯度"), row.get("経度")):
+                plan.added[identity] = row.key
         elif columns := changed.get(row.key):
             plan.refetch.append(Refetch(target, Reason.CHANGED, columns))
         elif rotation_slot(row.key) == slot:
@@ -387,12 +411,72 @@ def plan_update(
     return plan
 
 
-UNVERIFIED: Final = "unverified"
-"""詳細ページを確かめていないときの結論 (ADR 0021)。
+CONCLUSIONS: Final[dict[Presence, str]] = {
+    Presence.GONE: "delisted",
+    Presence.ALIVE: "unlisted",
+    Presence.UNKNOWN: "unverified",
+}
+"""存在確認の結果から出る結論 (ADR 0021)。
 
-不在は*消極的*な証拠でしかない。積極的な返答 (詳細ページの「必要な情報が
-足りません」) をまだ足していないので、確実だとは書かない。
+``unverified`` は「確かめていない」。台帳からの不在は*消極的*な証拠でしかないので、
+積極的な返答を得ていない回はそう書く。``unlisted`` は「台帳から外れただけで
+データベースにはまだ居る」。
 """
+
+RECLASSIFIED: Final = "reclassified"
+"""同じものが別の分類に現れた = 格上げ・格下げ。**削除ではない** (ADR 0021)。"""
+
+
+def candidates(plan: UpdatePlan, existing: Existing) -> list[Target]:
+    """存在を確かめる対象。**落とす候補と残す候補の両方**を返す。
+
+    残す側も確かめるのは、**102 では網羅性を確かめられない**ため — 全国件数と
+    キーの異なり数を直接比べられる分類ではないので、詳細ページの返答が唯一の
+    個別証拠になる (ADR 0021)。
+    """
+    found = []
+    for key in sorted(set(plan.removed) | set(plan.retained)):
+        record = existing.records.get(key, {})
+        ledger_id, _, managed_id = key.partition("/")
+        found.append(Target(ledger_id, managed_id, str(record.get("name", ""))))
+    return found
+
+
+def verify_removals(plan: UpdatePlan, presence: Mapping[str, Presence]) -> None:
+    """存在確認の結果で、落とすかどうかを決め直す (ADR 0021)。
+
+    **確かめられなかったものは落とさない。** 混んでいる時間帯に当たった 1 件を
+    指定解除と読み違えないため — 翌週やり直せば済む。逆に「無い」と答えたものは、
+    網羅性を確かめられない分類でも落とす (それ自体が個別の証拠なので)。
+    """
+    keep: list[str] = []
+    drop: list[str] = []
+    for key in sorted(set(plan.removed) | set(plan.retained)):
+        found = presence.get(key, Presence.UNKNOWN)
+        complete = key.partition("/")[0] in plan.complete
+        gone = found is Presence.GONE or (found is Presence.ALIVE and complete)
+        (drop if gone else keep).append(key)
+    plan.removed, plan.retained, plan.presence = drop, keep, dict(presence)
+
+
+def _identity(name: str, latitude: Any, longitude: Any) -> tuple[str, str, str] | None:
+    """同じ文化財だと言い切れる組み合わせ (ADR 0021)。
+
+    **名称だけでは弱い** — 「本堂」は何十とある。緯度経度を添えて完全一致だけを
+    採る。座標が無い行は同定しない (取りこぼす側に倒す)。
+    """
+    try:
+        coordinates = (f"{float(latitude):.6f}", f"{float(longitude):.6f}")
+    except (TypeError, ValueError):
+        return None
+    return (name, *coordinates) if name else None
+
+
+def _record_identity(record: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    name = " ".join(
+        str(part) for part in (record.get("name", ""), record.get("ridge_name", "")) if part
+    )
+    return _identity(name, record.get("latitude"), record.get("longitude"))
 
 
 def _removals(plan: UpdatePlan, existing: Existing, today: str) -> dict[str, dict[str, Any]]:
@@ -405,6 +489,9 @@ def _removals(plan: UpdatePlan, existing: Existing, today: str) -> dict[str, dic
     entries: dict[str, dict[str, Any]] = {}
     for key in plan.removed:
         record = existing.records[key]
+        found = plan.presence.get(key, Presence.UNKNOWN)
+        identity = _record_identity(record)
+        moved = plan.added.get(identity) if identity else None
         # 利用日は「そのデータを取り出した日」なので、前回の meta.json が
         # そのまま「最後に台帳で見た日」になる (ADR 0014 / ADR 0020)。
         seen = (
@@ -412,9 +499,12 @@ def _removals(plan: UpdatePlan, existing: Existing, today: str) -> dict[str, dic
         )
         entries[key] = removal_entry(
             record,
-            conclusion=UNVERIFIED,
+            conclusion=RECLASSIFIED if moved else CONCLUSIONS[found],
             last_seen_date=max(seen, default=""),
             missing_since=today,
+            category_complete=key.partition("/")[0] in plan.complete,
+            detail_page=found.value,
+            matched_elsewhere=[moved] if moved else None,
         )
     return entries
 
@@ -461,6 +551,32 @@ def format_ledger_diff(diff: LedgerDiff) -> str:
         lines.append(f"  {key} ({'・'.join(columns)})")
     if len(diff.changed) > _EXAMPLES:
         lines.append(f"  ほか {len(diff.changed) - _EXAMPLES:,} 件")
+    return "\n".join(lines)
+
+
+def format_verification(plan: UpdatePlan) -> str:
+    """存在確認の結果を人が読める形にする (ADR 0021)。
+
+    **落とさなかったものまで出す。** 確かめられない週が続いていることに気付けないと、
+    消えたはずの行がいつまでも残っていても分からない。
+    """
+    counts = {state: 0 for state in Presence}
+    for state in plan.presence.values():
+        counts[state] += 1
+    lines = [
+        "存在を確かめた: "
+        + " / ".join(f"{state.value} {counts[state]:,}" for state in Presence)
+        + f" (対照群 {plan.control.key if plan.control else '-'})"
+    ]
+    if plan.removed:
+        lines.append(f"落とす {len(plan.removed):,} 件")
+        lines.extend(
+            f"  {key} ({plan.presence.get(key, Presence.UNKNOWN).value})"
+            for key in plan.removed[:_EXAMPLES]
+        )
+    if plan.retained:
+        lines.append(f"確かめられず残す {len(plan.retained):,} 件 (翌週やり直す)")
+        lines.extend(f"  {key}" for key in plan.retained[:_EXAMPLES])
     return "\n".join(lines)
 
 
