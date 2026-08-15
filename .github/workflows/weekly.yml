@@ -264,7 +264,7 @@ jobs:
       # dry-run でも残す — そのとき取った台帳は本物なので、次の回の基準に使える。
       - name: 今回の台帳を残す
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.LEDGER_ARTIFACT }}
           path: cache/ledger
