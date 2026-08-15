@@ -203,19 +203,130 @@ def test_読めないページがあっても残りは書く(cache_dir: Path, tm
     assert report.has_anomalies
 
 
-def test_今回書かなかった既存ファイルを報せる(cache_dir: Path, tmp_path: Path) -> None:
-    """都道府県の振り分けが変わると、古いファイルに行が残り続ける。"""
-    ledger, detail = caches(cache_dir)
-    out = tmp_path / "repos"
-    stale = out / "national-treasures" / "data" / "01_hokkaido.jsonl"
-    stale.parent.mkdir(parents=True)
-    stale.write_text("{}\n", encoding="utf-8")
+def put_stale(out: Path, repo: str, name: str = "01_hokkaido.jsonl") -> Path:
+    """前回はあったが、今回 1 件も書かない県のファイルを置く (#57)。"""
+    path = out / repo / "data" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"ledger_id": "102", "managed_id": "9998"}\n', encoding="utf-8")
+    return path
 
-    report = build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
 
-    assert report.stale_files == [str(stale)]
-    assert stale.exists()  # 消しはしない (地域を絞った実行と区別できない)
-    assert "今回書かなかった既存ファイル" in format_report(report)
+class Test0件になったファイル:
+    """行が全部無くなった県のファイルは書き直されない (#57)。
+
+    地域を絞った実行と区別が付かないと消せないが、区別さえ付けば残す理由は無い —
+    **0 件の県にはそもそもファイルが無い**のが出力の形 (ADR 0009 / ADR 0013)。
+    """
+
+    def test_全域の実行なら消す(self, cache_dir: Path, tmp_path: Path) -> None:
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        stale = put_stale(out, "national-treasures")
+
+        report = build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+
+        assert not stale.exists()
+        assert report.removed_files == [str(stale)]
+        assert not report.stale_files
+        # meta.json は書き出したぶんだけを列挙するので、消えたぶんは自然に外れる
+        meta = json.loads((out / "national-treasures/meta.json").read_text(encoding="utf-8"))
+        assert [entry["path"] for entry in meta["files"]] == ["data/29_nara.jsonl"]
+        assert "0 件になったので消した" in format_report(report)
+
+    def test_地域を絞った実行では消さず報せるだけ(self, cache_dir: Path, tmp_path: Path) -> None:
+        """その地域を見ていないだけの県と区別が付かない。"""
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        stale = put_stale(out, "national-treasures")
+
+        report = build_dataset(
+            ledger, detail, list(SAMPLES), areas=[area_named("奈良県")], output_dir=out
+        )
+
+        assert stale.exists()
+        assert str(stale) in report.stale_files
+        assert not report.removed_files
+        assert "今回書かなかった既存ファイル" in format_report(report)
+
+    def test_詳細が未取得の行があるときは消さない(self, cache_dir: Path, tmp_path: Path) -> None:
+        """行が落ちたのは指定が消えたからではなく、取れていないから。"""
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, DESIGNATED, area_named("奈良県"), ["2594", "9999"])
+        put_detail(detail, DESIGNATED, "2594", fixture("detail_102.html"))
+        out = tmp_path / "repos"
+        stale = put_stale(out, "national-treasures")
+
+        report = build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
+
+        assert report.missing_html == 1
+        assert stale.exists()
+        assert report.stale_files == [str(stale)]
+
+    def test_読めないページがあるときは消さない(self, cache_dir: Path, tmp_path: Path) -> None:
+        """200 で返るエラーページを掴んだ回も、0 件を断言できない (ADR 0011)。"""
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, DESIGNATED, area_named("奈良県"), ["2594", "9999"])
+        put_detail(detail, DESIGNATED, "2594", fixture("detail_102.html"))
+        put_detail(detail, DESIGNATED, "9999", "<html><body>ただいま混み合っています</body></html>")
+        out = tmp_path / "repos"
+        stale = put_stale(out, "national-treasures")
+
+        report = build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
+
+        assert report.parse_failures
+        assert stale.exists()
+        assert report.stale_files == [str(stale)]
+
+    def test_その種別に1件も書かなかったときは消さない(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """``fetch-ledger`` が途中で止まった回に、リポジトリを全滅させないため。
+
+        台帳に行が無ければ ``missing_html`` も増えないので、取りこぼしの検査では
+        捕まらない。
+        """
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, SELECTED, area_named("京都府"), ["16"])
+        put_detail(detail, SELECTED, "16", fixture("detail_103.html"))
+        out = tmp_path / "repos"
+        stale = put_stale(out, "national-treasures", "29_nara.jsonl")
+
+        report = build_dataset(ledger, detail, [DESIGNATED, SELECTED], output_dir=out)
+
+        assert report.missing_html == 0
+        assert stale.exists()
+        assert report.stale_files == [str(stale)]
+
+    def test_消した種別の利用日は進む(self, cache_dir: Path, tmp_path: Path) -> None:
+        """削除しか起きなかった週も、行は動いている (ADR 0020 の据え置き)。"""
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        existing = read_existing(out, datasets_for(list(SAMPLES)))
+        # 前回の出力を読んだ後に置く = 台帳にも前回のレコードにも無い県のファイル
+        stale = put_stale(out, "national-treasures")
+
+        build_dataset(
+            ledger,
+            DetailCache(tmp_path / "empty"),
+            list(SAMPLES),
+            output_dir=out,
+            reuse=Reuse(
+                records=existing.records,
+                labels=existing.labels,
+                accessed_at="2026-12-25T00:00:00+00:00",
+                accessed_dates=existing.accessed_dates,
+            ),
+        )
+
+        def accessed(repo: str) -> str:
+            meta = json.loads((out / repo / "meta.json").read_text(encoding="utf-8"))
+            return str(meta["source"]["accessed_date"])
+
+        assert not stale.exists()
+        assert accessed("national-treasures") == "2026-12-25"
+        # 消えたファイルが無い種別は据え置き
+        assert accessed("registered-tangible-cultural-properties") == "2026-08-12"
 
 
 def test_台帳が空なら何も書かない(cache_dir: Path, tmp_path: Path) -> None:
