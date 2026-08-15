@@ -335,6 +335,10 @@ class BuildReport:
     """詳細を取り直さず、前回の出力をそのまま使ったもの (差分更新。ADR 0018)。"""
     retained: int = 0
     """台帳に現れなかったが、消さずに残したもの (網羅性が確かめられない分類)。"""
+    removed_records: int = 0
+    """``removed.jsonl`` に新しく記録した行 (ADR 0021)。異常ではない。"""
+    restored_records: int = 0
+    """記録から外した行 (台帳へ戻った・振り分けが戻った)。"""
     parse_failures: list[str] = field(default_factory=list)
     unknown_labels: Counter[str] = field(default_factory=Counter)
     invalid_dates: Counter[str] = field(default_factory=Counter)

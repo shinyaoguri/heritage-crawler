@@ -36,6 +36,7 @@ from heritage_crawler.catalog import (
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
 from heritage_crawler.ledger import LedgerRow, read_ledger_rows
 from heritage_crawler.metadata import (
+    accessed_date,
     build_metadata,
     generator_version,
     metadata_path,
@@ -95,6 +96,23 @@ class Reuse:
     利用日は「そのデータを取り出した日」なので、取り出し直していない回に動かす
     理由が無い。据え置けば `meta.json` も 1 バイトも変わらず、確認しただけの回に
     コミットが立たない。
+    """
+
+    removals: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    """キー → ``removed.jsonl`` の 1 行 (ADR 0021)。台帳から消えて落とした行。"""
+
+    previous_repos: Mapping[str, set[str]] = field(default_factory=dict)
+    """キー → 前回そのキーが居たリポジトリ名。
+
+    落とした行を**前回の居場所へ**書くために要る。あわせて、台帳には居るのに
+    振り分けが変わった行 (401 の種別変更、102 の区分変更) もここから分かる。
+    """
+
+    previous_removed: Mapping[str, Mapping[str, Mapping[str, Any]]] = field(default_factory=dict)
+    """リポジトリ名 → キー → 前回の ``removed.jsonl`` の 1 行。
+
+    **そのまま引き継ぐ。** 消えたままの週に書き直すと ``missing_since`` が動いて
+    「いつ消えたか」が失われる。
     """
 
 
@@ -167,6 +185,7 @@ def build_dataset(
 
     # **消したファイルも「行が動いた」** — 利用日を据え置くとその週だけ日付が止まる。
     touched |= _settle_stale_files(output_dir, categories, groups, report, areas=areas)
+    touched |= _write_removed(output_dir, categories, groups, report, reuse=reuse, seen=seen)
 
     version = generator_version()
     for dataset, entries in written.items():
@@ -319,6 +338,147 @@ def _settle_stale_files(
     return emptied
 
 
+REMOVED_FILENAME: Final = "removed.jsonl"
+"""落とした行の記録 (ADR 0021)。**データリポジトリのルートに置く。**
+
+``data/`` の下ではない — 閲覧サイトが読むのも配布物に入るのも配信前の検査が
+見るのも ``data/*.jsonl`` だけなので、ルートに置けば ``code4heritage/heritages``
+は自動的に無視する。``data/`` へ置くと「``meta.json`` に無いのに置かれている
+ファイル」として配信が止まる。
+"""
+
+
+def removal_entry(
+    record: Mapping[str, Any],
+    *,
+    conclusion: str,
+    last_seen_date: str,
+    missing_since: str,
+    absent_from_ledger: bool = True,
+    category_complete: bool | None = True,
+    detail_page: str = "unknown",
+    matched_elsewhere: list[str] | None = None,
+) -> dict[str, Any]:
+    """``removed.jsonl`` の 1 行を組み立てる (ADR 0021)。
+
+    **判定を 1 語に潰さない。** 読む側は ``conclusion`` だけ見てもよいし、
+    ``evidence`` に自分の基準を当ててもよい。確実でないものを確実だと書かずに
+    済ませるための形。
+
+    レコードは最後に観測したものを丸ごと入れる — 名称も所在地も座標も無い
+    削除リストは、事実上「番号の列」でしかない。
+
+    ``missing_since`` は**台帳から消えているのを最初に観測した日**であって、
+    解除の告示日ではない (ソースは告示日を持たない)。
+    """
+    return {
+        **record,
+        "last_seen_date": last_seen_date,
+        "missing_since": missing_since,
+        "evidence": {
+            "absent_from_ledger": absent_from_ledger,
+            "category_complete": category_complete,
+            "detail_page": detail_page,
+            "matched_elsewhere": matched_elsewhere,
+        },
+        "conclusion": conclusion,
+    }
+
+
+def _write_removed(
+    output_dir: Path,
+    categories: Sequence[Category],
+    groups: dict[tuple[Dataset, Area], list[dict[str, Any]]],
+    report: BuildReport,
+    *,
+    reuse: Reuse | None,
+    seen: set[str],
+) -> set[Dataset]:
+    """``removed.jsonl`` を書く (ADR 0021)。返すのは記録が動いたデータセット。
+
+    **状態型** — 並ぶのは「いま消えているもの」だけで、復活すれば行は消える。
+    誤検出が「解除された文化財」として固定されないための性質で、消えて戻った
+    経緯は git 履歴とリリースノート (ADR 0019) が持つ。
+
+    **``reuse`` が無いときは何もしない。** ``build-records`` の全件再組み立ては
+    キャッシュしか読まないので履歴を再現できず、書けば消すことになる
+    (ADR 0021 の「影響」)。
+    """
+    if reuse is None:
+        return set()
+
+    by_dataset: dict[Dataset, set[str]] = defaultdict(set)
+    for (dataset, _), records in groups.items():
+        by_dataset[dataset].update(f"{item['ledger_id']}/{item['managed_id']}" for item in records)
+    # 走査しながら書き足さないよう、ここで固定する (既定値で穴が開くのを防ぐ)。
+    written: Mapping[Dataset, set[str]] = dict(by_dataset)
+
+    moved: set[Dataset] = set()
+    for dataset in datasets_for(categories):
+        here = written.get(dataset, set())
+        previous = reuse.previous_removed.get(dataset.repo, {})
+        entries = {
+            # ① 今回そのリポジトリへ書いたキーは外す (台帳へ戻った行・振り分けが
+            #    戻った行の両方をこれ 1 つで拾える)。
+            key: dict(entry)
+            for key, entry in previous.items()
+            if key not in here
+        }
+        restored = len(previous) - len(entries)
+        # ② 台帳から消えて落とした行を、前回の居場所へ足す。
+        for key, entry in reuse.removals.items():
+            if dataset.repo in reuse.previous_repos.get(key, set()):
+                entries[key] = dict(entry)
+        # ③ 台帳には居るのに、そのリポジトリからは消えた行 (401 の種別変更、
+        #    102 の区分変更)。利用者から見れば削除と区別が付かない。
+        for key in seen & reuse.previous_repos.keys():
+            if dataset.repo not in reuse.previous_repos[key] or key in here or key in entries:
+                continue
+            record = reuse.records.get(key)
+            # 書き先が 1 つも無いのは移動ではなく振り分けの失敗 (401 の unroutable)。
+            # 報告には出ているので、ここで「移動した」と書かない。
+            elsewhere = sorted(other.repo for other in written if key in written[other])
+            if record is None or not elsewhere:
+                continue
+            entries[key] = removal_entry(
+                record,
+                conclusion="rerouted",
+                last_seen_date=reuse.accessed_dates.get(dataset.repo, ""),
+                missing_since=accessed_date(reuse.accessed_at),
+                absent_from_ledger=False,
+                category_complete=None,
+                matched_elsewhere=elsewhere,
+            )
+
+        report.removed_records += sum(1 for key in entries if key not in previous)
+        report.restored_records += restored
+        if _put_removed(output_dir / dataset.repo / REMOVED_FILENAME, entries, report):
+            moved.add(dataset)
+    return moved
+
+
+def _put_removed(path: Path, entries: dict[str, dict[str, Any]], report: BuildReport) -> bool:
+    """記録を書き出す。0 件ならファイルごと消す。動いたかどうかを返す。
+
+    「0 件 = ファイルが無い」は出力の不変条件 (#57 / ADR 0013)。空ファイルを
+    残すと「まだ調べていない」と見分けが付かない。
+    """
+    ordered = sorted(entries.values(), key=lambda entry: (entry["ledger_id"], entry["managed_id"]))
+    lines = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in ordered)
+    data = lines.encode("utf-8")
+    if not data:
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+    if path.exists() and path.read_bytes() == data:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, data)
+    report.files.append(f"{path} ({len(ordered):,} 行)")
+    return True
+
+
 def format_report(report: BuildReport) -> str:
     """組み立て結果を人が読める形にする。異常は件数と実例を並べる。"""
     lines = [
@@ -329,6 +489,10 @@ def format_report(report: BuildReport) -> str:
         lines.append(f"うち前回の出力をそのまま使った: {report.reused:,} 件")
     if report.retained:
         lines.append(f"台帳に出なかったが残した: {report.retained:,} 件")
+    if report.removed_records:
+        lines.append(f"落とした行を記録した: {report.removed_records:,} 件 ({REMOVED_FILENAME})")
+    if report.restored_records:
+        lines.append(f"記録から外した行 (復活): {report.restored_records:,} 件")
     lines.extend(f"  書き出し: {entry}" for entry in report.files)
     if report.missing_html:
         lines.append("未取得ぶんは fetch-detail で取れる")

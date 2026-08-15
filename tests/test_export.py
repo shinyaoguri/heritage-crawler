@@ -15,8 +15,9 @@ from typing import Any
 from conftest import FETCHED_AT, area_named, fixture, lines, put_detail, put_ledger
 from heritage_crawler.cache import DetailCache, LedgerCache
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED, datasets_for
-from heritage_crawler.export import Reuse, build_dataset, format_report
-from heritage_crawler.update import read_existing
+from heritage_crawler.export import REMOVED_FILENAME, Reuse, build_dataset, format_report
+from heritage_crawler.ledger import read_ledger_rows
+from heritage_crawler.update import plan_update, read_existing, reuse_for
 
 SAMPLES = {
     REGISTERED: ("00004339", "detail_101.html", "東京都"),
@@ -509,6 +510,133 @@ class Test前回の出力を使い回す:
         assert meta["source"]["accessed_date"] == "2026-10-01"
         assert "2026年10月1日に利用" in meta["source"]["attribution"]
         assert meta["labels"]["name"] == "名称"
+
+
+class Test削除の記録:
+    """落とした行を `removed.jsonl` に残す (ADR 0021)。
+
+    状態型なので「いま消えているもの」しか並ばない — 復活すれば行は消える。
+    誤検出が「解除された文化財」として固定されないための性質。
+    """
+
+    def removed(self, out: Path, repo: str) -> list[dict[str, Any]]:
+        return lines(out / repo / REMOVED_FILENAME)
+
+    def prepare(self, cache_dir: Path, out: Path, ids: list[str]) -> DetailCache:
+        """103 を `ids` ぶん書き出した状態にする。"""
+        detail = DetailCache(cache_dir)
+        ledger = LedgerCache(cache_dir / "before")
+        put_ledger(ledger, SELECTED, area_named("京都府"), ids)
+        for managed_id in ids:
+            put_detail(detail, SELECTED, managed_id, fixture("detail_103.html"))
+        build_dataset(ledger, detail, [SELECTED], output_dir=out)
+        return detail
+
+    def rebuild(
+        self, cache_dir: Path, detail: DetailCache, out: Path, ids: list[str]
+    ) -> Any:
+        """台帳を `ids` だけに減らして組み立て直す (差分更新と同じ経路を通す)。"""
+        ledger = LedgerCache(cache_dir / "after")
+        put_ledger(ledger, SELECTED, area_named("京都府"), ids)
+        existing = read_existing(out, datasets_for([SELECTED]))
+        plan = plan_update(
+            existing,
+            read_ledger_rows(ledger, [SELECTED]),
+            slot=99,
+            complete_categories={SELECTED.code},
+        )
+        reuse = reuse_for(plan, existing, "2026-08-17T00:00:00+00:00")
+        return build_dataset(ledger, detail, [SELECTED], output_dir=out, reuse=reuse)
+
+    def test_落とした行が前回居たリポジトリに入る(self, cache_dir: Path, tmp_path: Path) -> None:
+        out = tmp_path / "repos"
+        detail = self.prepare(cache_dir, out, ["16", "17"])
+
+        report = self.rebuild(cache_dir, detail, out, ["16"])
+
+        entry = self.removed(out, PRESERVATION_DISTRICTS)
+        assert [item["managed_id"] for item in entry] == ["17"]
+        assert entry[0]["conclusion"] == "unverified"
+        assert entry[0]["missing_since"] == "2026-08-17"
+        # レコードを丸ごと残す — 番号だけでは「何が消えたか」が分からない。
+        assert entry[0]["name"] == "京都市上賀茂"
+        assert report.removed_records == 1
+        assert "落とした行を記録した: 1 件" in format_report(report)
+
+    def test_消えたままの回は記録が1バイトも動かない(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """`missing_since` は消えたと最初に気付いた日。翌週に進めては意味が変わる。"""
+        out = tmp_path / "repos"
+        detail = self.prepare(cache_dir, out, ["16", "17"])
+        self.rebuild(cache_dir, detail, out, ["16"])
+        before = (out / PRESERVATION_DISTRICTS / REMOVED_FILENAME).read_bytes()
+
+        self.rebuild(cache_dir, detail, out, ["16"])
+
+        assert (out / PRESERVATION_DISTRICTS / REMOVED_FILENAME).read_bytes() == before
+
+    def test_復活すると記録から消える(self, cache_dir: Path, tmp_path: Path) -> None:
+        """状態型なので、台帳へ戻った行は記録から落ちる。0 件ならファイルごと消す。"""
+        out = tmp_path / "repos"
+        detail = self.prepare(cache_dir, out, ["16", "17"])
+        self.rebuild(cache_dir, detail, out, ["16"])
+
+        report = self.rebuild(cache_dir, detail, out, ["16", "17"])
+
+        assert not (out / PRESERVATION_DISTRICTS / REMOVED_FILENAME).exists()
+        assert report.restored_records == 1
+
+    def test_書き先が変わると移動元にだけ入る(self, cache_dir: Path, tmp_path: Path) -> None:
+        """台帳には居るのに振り分けが変わった行 (102 の区分変更、401 の種別変更)。
+
+        利用者から見れば削除と区別が付かないので、移動元の記録に残す。
+        """
+        out = tmp_path / "repos"
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, DESIGNATED, area_named("奈良県"), ["2594"])
+        put_detail(detail, DESIGNATED, "2594", with_treasure_class("国宝"))
+        build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
+
+        put_detail(detail, DESIGNATED, "2594", with_treasure_class("重要文化財"))
+        existing = read_existing(out, datasets_for([DESIGNATED]))
+        plan = plan_update(
+            existing,
+            read_ledger_rows(ledger, [DESIGNATED]),
+            slot=99,
+            complete_categories={DESIGNATED.code},
+        )
+        build_dataset(
+            ledger,
+            detail,
+            [DESIGNATED],
+            output_dir=out,
+            reuse=reuse_for(plan, existing, "2026-08-17T00:00:00+00:00"),
+        )
+
+        entry = self.removed(out, "national-treasures")
+        assert [item["managed_id"] for item in entry] == ["2594"]
+        assert entry[0]["conclusion"] == "rerouted"
+        assert entry[0]["evidence"]["absent_from_ledger"] is False
+        assert entry[0]["evidence"]["matched_elsewhere"] == ["important-cultural-properties"]
+        assert not (out / "important-cultural-properties" / REMOVED_FILENAME).exists()
+
+    def test_全件の組み立て直しでは触らない(self, cache_dir: Path, tmp_path: Path) -> None:
+        """`build-records` はキャッシュしか読まないので、履歴を再現できない。
+
+        触らないと決めておかないと、スキーマ変更のたびに記録が静かに失われる
+        (ADR 0021 の「影響」)。
+        """
+        ledger, detail = caches(cache_dir)
+        out = tmp_path / "repos"
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+        path = out / PRESERVATION_DISTRICTS / REMOVED_FILENAME
+        path.write_text('{"ledger_id": "103", "managed_id": "9999"}\n', encoding="utf-8")
+        before = path.read_bytes()
+
+        build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
+
+        assert path.read_bytes() == before
 
 
 def test_報告に件数と異常が出る(cache_dir: Path, tmp_path: Path) -> None:
