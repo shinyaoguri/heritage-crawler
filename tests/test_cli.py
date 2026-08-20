@@ -20,6 +20,7 @@ from heritage_crawler.catalog import (
 )
 from heritage_crawler.cli import build_parser, main
 from heritage_crawler.detail import Presence
+from heritage_crawler.ledger import LedgerRun
 from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
 from heritage_crawler.update import ROTATION_SLOTS, rotation_slot
 
@@ -88,6 +89,32 @@ def test_報告は取得せずに出せる(cache_dir: Path, capsys: pytest.Captu
     for code in ("101", "102", "103"):
         assert code in printed
     assert "未取得 51 地域" in printed
+
+
+def _fetch_ledgers_returning(
+    monkeypatch: pytest.MonkeyPatch, run: LedgerRun
+) -> None:
+    """取得そのものは走らせず、結果だけを差し替える (外部サイトへ出ない)。"""
+    monkeypatch.setattr(cli, "fetch_ledgers", lambda *args, **kwargs: run)
+
+
+def test_台帳を取り切れなければ_1_を返す(
+    cache_dir: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """週次はこの終了コードで retry.sh の次の回を呼ぶ (ADR 0022)。"""
+    _fetch_ledgers_returning(monkeypatch, LedgerRun(fetched=3, failures=["102 × 三重県"]))
+
+    assert main(["--cache-dir", str(cache_dir), "fetch-ledger"]) == 1
+    # 取れたぶんの報告は失敗があっても出す。どこまで進んだかが次の回の入力になる。
+    assert "102" in capsys.readouterr().out
+
+
+def test_全部取れたら_0_を返す(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fetch_ledgers_returning(monkeypatch, LedgerRun(fetched=3))
+
+    assert main(["--cache-dir", str(cache_dir), "fetch-ledger"]) == 0
 
 
 def test_一覧の突き合わせは既定で回収しない() -> None:

@@ -53,6 +53,7 @@ from heritage_crawler.http import (
 )
 from heritage_crawler.ledger import (
     LedgerError,
+    LedgerRun,
     Session,
     fetch_ledgers,
     format_summary,
@@ -389,20 +390,31 @@ def _run_ledger(
     categories: Sequence[Category],
     areas: Sequence[Area],
 ) -> int:
+    run: LedgerRun | None = None
     if args.command == "fetch-ledger":
         client = PoliteClient(contact=args.contact, interval=args.interval, timeout=args.timeout)
         try:
-            fetch_ledgers(client, cache, categories, areas, force=args.force)
+            run = fetch_ledgers(client, cache, categories, areas, force=args.force)
         except KeyboardInterrupt:
             logger.warning("中断した。取得済みは記録済みなので、同じコマンドで再開できる")
             return 130
-        except (FetchError, LedgerError, ParseError) as error:
-            logger.error("%s", error)
-            logger.error("%s", RESUME_HINT)
-            return 1
 
+    # 取れたぶんの報告は、失敗があっても出す。どこまで進んだかが次の回の入力になる。
     print(format_summary(summarize(cache, categories, areas)))
-    return 0
+    if run is None or run.ok:
+        return 0
+
+    if run.abort_reason:
+        logger.error("%s", run.abort_reason)
+    logger.error("%d 件を取れなかった: %s", len(run.failures), _listed(run.failures))
+    logger.error("%s", RESUME_HINT)
+    return 1
+
+
+def _listed(items: Sequence[str], limit: int = 10) -> str:
+    """失敗の一覧。204 地域ぶん並べても読めないので頭だけ出す。"""
+    head = "、".join(items[:limit])
+    return head if len(items) <= limit else f"{head} ほか {len(items) - limit} 件"
 
 
 def _run_audit(
