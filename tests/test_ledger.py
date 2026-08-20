@@ -25,11 +25,11 @@ from heritage_crawler.ledger import (
     search_fields,
     summarize,
 )
-from heritage_crawler.search_page import ParseError
 
 CATEGORY = TARGET_CATEGORIES[1]  # 102 (1 指定が複数の棟に展開される)
 UNEXPANDED = TARGET_CATEGORIES[3]  # 401 (指定 = 1 行)
 HOKKAIDO = SEARCH_AREAS[0]
+AOMORI = SEARCH_AREAS[1]
 TOKYO = SEARCH_AREAS[12]
 
 SAMPLE_ROW = [
@@ -69,6 +69,39 @@ def make_fetcher(whole: int = WHOLE_COUNT) -> FakeFetcher:
         {
             INDEX_URL: fixture("search_index.html").encode("utf-8"),
             SEARCH_URL: search_responder(whole),
+            CSV_URL: make_csv([SAMPLE_ROW] * 85),
+        }
+    )
+
+
+NO_WAIT: Callable[[float], None] = lambda _: None  # noqa: E731 - 再試行の待ちを飛ばす
+
+
+BROKEN_RESPONSE = "<html>必要な情報が足りません。</html>".encode()
+"""200 で返る壊れた応答 (ADR 0011)。件数表示が無いので読めない。"""
+
+
+def broken_fetcher(*areas: str, times: int | None = None) -> FakeFetcher:
+    """指定した地域の検索だけが壊れた応答を返す取得の身代わり。
+
+    ``times`` を渡すと、その回数だけ壊れて以降は正常に答える (相手が回復する形)。
+    地域名に ``""`` を渡すと全国件数の検索が壊れる。
+    """
+    normal = search_responder()
+    remaining = times
+
+    def respond(fields: tuple[tuple[str, str], ...]) -> bytes:
+        nonlocal remaining
+        if dict(fields)["seat_pref"] in areas and remaining != 0:
+            if remaining is not None:
+                remaining -= 1
+            return BROKEN_RESPONSE
+        return normal(fields)
+
+    return FakeFetcher(
+        {
+            INDEX_URL: fixture("search_index.html").encode("utf-8"),
+            SEARCH_URL: respond,
             CSV_URL: make_csv([SAMPLE_ROW] * 85),
         }
     )
@@ -178,22 +211,80 @@ def test_検索応答が読めなければトークンを取り直して再試�
         }
     )
     cache = LedgerCache(cache_dir)
-    fetch_ledgers(fetcher, cache, [CATEGORY], [HOKKAIDO])
+    fetch_ledgers(fetcher, cache, [CATEGORY], [HOKKAIDO], sleep=NO_WAIT)
     # トークンを取り直した = トップページを 2 度取っている
     assert fetcher.urls().count(INDEX_URL) == 2
     assert cache.entries["102/01-hokkaido"].row_count == 85
 
 
-def test_読めない応答が続けば諦めて失敗させる(cache_dir: Path) -> None:
-    """取り直しても駄目なものを、0 件として静かに通さない。"""
-    fetcher = FakeFetcher(
-        {
-            INDEX_URL: fixture("search_index.html").encode("utf-8"),
-            SEARCH_URL: "<html>メンテナンス中</html>".encode(),
-        }
+def test_読めない応答には待ちを挟んで繰り返す(cache_dir: Path) -> None:
+    """読めない応答は 200 で返るので、HTTP クライアント側の再試行が働かない。
+
+    トークンの取り直しだけでは相手の一時的な不調に効かないため、間を置いて粘る
+    (ADR 0022)。待ち時間は http.RETRY_BACKOFF と同じく 2 秒・4 秒。
+    """
+    waits: list[float] = []
+    cache = LedgerCache(cache_dir)
+    run = fetch_ledgers(
+        broken_fetcher(HOKKAIDO.name, times=2), cache, [CATEGORY], [HOKKAIDO], sleep=waits.append
     )
-    with pytest.raises(ParseError):
-        fetch_ledgers(fetcher, LedgerCache(cache_dir), [CATEGORY], [HOKKAIDO])
+
+    assert waits == [2.0, 4.0]  # 3 回目で読めた
+    assert run.ok
+    assert cache.entries["102/01-hokkaido"].row_count == 85
+
+
+def test_読めない応答が続けば取れなかったものとして数える(cache_dir: Path) -> None:
+    """取り直しても駄目なものを、0 件として静かに通さない。"""
+    cache = LedgerCache(cache_dir)
+    run = fetch_ledgers(
+        broken_fetcher(HOKKAIDO.name), cache, [CATEGORY], [HOKKAIDO], sleep=NO_WAIT
+    )
+
+    assert run.ok is False
+    assert run.failures == ["102 × 北海道"]
+    assert "102/01-hokkaido" not in cache.entries
+
+
+def test_1_地域が取れなくても残りを取りに行く(cache_dir: Path) -> None:
+    """止めてしまうと、繰り返しても同じところで死んで 1 地域も前へ進めない。
+
+    2026-08-16 の週次実行がそうなった (102 × 三重県 で 3 回とも即死。Issue #53)。
+    """
+    cache = LedgerCache(cache_dir)
+    areas = [HOKKAIDO, AOMORI, TOKYO]
+    run = fetch_ledgers(
+        broken_fetcher(AOMORI.name), cache, [CATEGORY], areas, sleep=NO_WAIT
+    )
+
+    assert run.failures == ["102 × 青森県"]
+    # 壊れた地域の前も後も取れている = 次の回に残るのは青森県だけ
+    assert cache.entries["102/01-hokkaido"].row_count == 85
+    assert cache.entries["102/13-tokyo"].row_count == 0
+
+
+def test_全国件数が取れなくても地域は取りに行く(cache_dir: Path) -> None:
+    """全国件数は毎回数え直すので、キャッシュを上書きしないだけで次の回に拾える。"""
+    cache = LedgerCache(cache_dir)
+    run = fetch_ledgers(
+        broken_fetcher(""), cache, [CATEGORY], [HOKKAIDO], sleep=NO_WAIT
+    )
+
+    assert run.failures == ["102 の全国件数"]
+    assert cache.entries["102/01-hokkaido"].row_count == 85
+    assert summarize(cache, [CATEGORY], [HOKKAIDO])[0].whole_count is None
+
+
+def test_続けて失敗したら打ち切って残りを叩かない(cache_dir: Path) -> None:
+    """相手が落ちているのに 204 地域を叩き続けない。"""
+    areas = list(SEARCH_AREAS[:6])
+    fetcher = broken_fetcher(*(area.name for area in areas))
+    run = fetch_ledgers(fetcher, LedgerCache(cache_dir), [CATEGORY], areas, sleep=NO_WAIT)
+
+    assert len(run.failures) == 5  # CONSECUTIVE_FAILURE_LIMIT
+    assert run.abort_reason is not None
+    searched = [dict(sent)["seat_pref"] for _, url, sent in fetcher.calls if url == SEARCH_URL]
+    assert areas[5].name not in searched
 
 
 def test_中断しても取得済みをやり直さない(cache_dir: Path) -> None:

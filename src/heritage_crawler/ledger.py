@@ -22,14 +22,15 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import time
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final
 
 from heritage_crawler.cache import LedgerCache, LedgerEntry, entry_key
 from heritage_crawler.catalog import BASE_URL, SEARCH_AREAS, Area, Category
-from heritage_crawler.http import Fetcher, FormFields
+from heritage_crawler.http import Fetcher, FetchError, FormFields
 from heritage_crawler.search_page import (
     ParseError,
     SearchPage,
@@ -42,6 +43,28 @@ logger = logging.getLogger(__name__)
 INDEX_URL: Final = f"{BASE_URL}/bsys/index"
 SEARCH_URL: Final = f"{BASE_URL}/bsys/searchlist"
 CSV_URL: Final = f"{BASE_URL}/utile/csv-list"
+
+SEARCH_ATTEMPTS: Final = 3
+"""検索応答が読めなかったときの試行回数。
+
+読めない応答は **200 で返る** (ADR 0011) ため、HTTP クライアント側の再試行
+(5xx とタイムアウトが対象) は働かない。ここで粘らないと、相手の数秒の不調が
+そのまま 1 地域の取りこぼしになる。
+"""
+
+SEARCH_BACKOFF: Final = 1.0
+"""再試行の待ち時間の基数 (2 秒・4 秒と伸ばす)。
+
+``http.RETRY_BACKOFF`` と同じ考え方で、**レートの間隔からは導かない**
+(ADR 0010)。間隔を詰めたときに、不調な相手への再試行まで速くなってしまう。
+"""
+
+CONSECUTIVE_FAILURE_LIMIT: Final = 5
+"""これだけ続けて失敗したら打ち切る (ADR 0022)。
+
+相手が落ちているか、こちらが弾かれている。1 地域 = 検索 + CSV の 2 リクエストと
+重いので、詳細ページ (``detail.CONSECUTIVE_FAILURE_LIMIT`` = 10) より早く止める。
+"""
 
 EXPECTED_CSV_HEADER: Final[tuple[str, ...]] = (
     "台帳ID",
@@ -188,9 +211,10 @@ def fetch_one(
     area: Area,
     *,
     now: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[LedgerEntry, bytes]:
     """1 つの (分類 × 地域) を取得する。0 件なら CSV は要求せず空を返す。"""
-    page = _search(fetcher, session, category, area.name)
+    page = _search(fetcher, session, category, area.name, sleep=sleep)
 
     if page.csv_fields is None:
         logger.info("%s × %s: 0 件", category.code, area.name)
@@ -225,40 +249,115 @@ def search[Page](
     category: Category,
     area_name: str,
     parse: Callable[[str], Page],
+    *,
+    attempts: int = SEARCH_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Page:
-    """検索して結果ページを読む。トークンが失効していたら 1 度だけ取り直す。
+    """検索して結果ページを読む。読めなければ待って取り直す。
 
     同じ応答から読みたいものが 2 通りある — CSV 出力の hidden 値
     (``parse_search_page``) と結果一覧そのもの (``parse_listing_page``) —
     ので、読み方を渡してもらう。
+
+    **待つのは相手の一時的な不調に効かせるため。** 読めない応答は 200 で返るので
+    HTTP クライアント側の再試行 (5xx とタイムアウトが対象) が働かない。トークンの
+    失効なら取り直しだけで直るが、相手が壊れた応答を返しているときは間を置くしかない
+    (ADR 0011 / ADR 0022)。
     """
-    for attempt in (1, 2):
+    for attempt in range(1, attempts + 1):
         html = fetcher.post(
             SEARCH_URL, search_fields(session.token, category, area_name)
         ).decode("utf-8")
         try:
             return parse(html)
         except ParseError as error:
-            if attempt == 2:
+            if attempt == attempts:
+                # 壊れた応答の実物はどこにも残らない。次に落ちたときエラーページ
+                # (ADR 0011) と構成変更を切り分けられるよう、大きさと頭を残す。
+                logger.error(
+                    "検索応答を読めなかった (%s)。応答は %d 文字: %r",
+                    error,
+                    len(html),
+                    html[:200],
+                )
                 raise
-            logger.warning("検索応答を読めなかった (%s)。トークンを取り直して再試行する", error)
+            backoff = SEARCH_BACKOFF * 2**attempt
+            logger.warning(
+                "検索応答を読めなかった (%s)。%.1f 秒待ち、トークンを取り直して再試行する (%d/%d)",
+                error,
+                backoff,
+                attempt,
+                attempts - 1,
+            )
+            sleep(backoff)
             session.refresh()
     raise AssertionError("到達しない")
 
 
-def _search(fetcher: Fetcher, session: Session, category: Category, area_name: str) -> SearchPage:
-    return search(fetcher, session, category, area_name, parse_search_page)
+def _search(
+    fetcher: Fetcher,
+    session: Session,
+    category: Category,
+    area_name: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> SearchPage:
+    return search(fetcher, session, category, area_name, parse_search_page, sleep=sleep)
 
 
-def fetch_whole_count(fetcher: Fetcher, session: Session, category: Category) -> int:
+def fetch_whole_count(
+    fetcher: Fetcher,
+    session: Session,
+    category: Category,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
     """地域で絞らずに検索して、その分類の全国件数を得る。
 
     地域合計と突き合わせる基準はこれを使う。ソース側の件数が動いても同じ実行の
     中で取った値どうしを比べるので、固定値のように古びない。
     """
-    count = _search(fetcher, session, category, "").hit_count
+    count = _search(fetcher, session, category, "", sleep=sleep).hit_count
     logger.info("%s: 全国 %d 件 (指定)", category.code, count)
     return count
+
+
+@dataclass
+class LedgerRun:
+    """1 回の取得実行の結果 (ADR 0022)。
+
+    途中で止まらないので、成否は例外ではなくここに集まる。呼び出し側は
+    ``failures`` が空かどうかで終了コードを決める。
+    """
+
+    fetched: int = 0
+    failures: list[str] = field(default_factory=list)
+    """取れなかったもの (``102 × 三重県`` / ``102 の全国件数``)。"""
+
+    abort_reason: str | None = None
+    """打ち切ったなら、その理由。残りの地域は叩いていない。"""
+
+    consecutive_failures: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return not self.failures
+
+    def succeeded(self) -> None:
+        self.fetched += 1
+        self.consecutive_failures = 0
+
+    def failed(self, what: str, error: Exception, *, limit: int) -> None:
+        """1 つの失敗を記録する。続きすぎたら打ち切りの理由を立てる。"""
+        self.failures.append(what)
+        self.consecutive_failures += 1
+        logger.warning("%s の取得に失敗した: %s", what, error)
+        if self.consecutive_failures >= limit:
+            self.abort_reason = (
+                f"{self.consecutive_failures} 件続けて失敗した。"
+                "相手が落ちているか、こちらが弾かれている可能性がある。"
+                "取得済みは記録済みなので、間隔を空けてから同じコマンドで再開できる"
+            )
 
 
 def fetch_ledgers(
@@ -269,21 +368,47 @@ def fetch_ledgers(
     *,
     force: bool = False,
     now: Callable[[], datetime] = _utc_now,
-) -> None:
+    sleep: Callable[[float], None] = time.sleep,
+    failure_limit: int = CONSECUTIVE_FAILURE_LIMIT,
+) -> LedgerRun:
     """分類 × 地域を順に取得する。取得済みは飛ばす (``force`` で取り直す)。
 
     分類ごとに全国件数も取り直す。1 分類あたり 1 リクエストで、地域合計との
     差が取りこぼしと重複の両方を教えてくれる (``summarize``)。
+
+    **1 つ取れなくても止めない** (ADR 0022)。記録して次へ進み、取れなかったぶんは
+    ``LedgerRun.failures`` に載る。取れたぶんはキャッシュに入るので、同じコマンドを
+    もう一度走らせれば**残りだけ**を取りに行く。止めてしまうと、繰り返しても同じ
+    ところで死んで 1 地域も前に進めない (2026-08-16 の週次実行がそうなった)。
     """
     session = Session(fetcher)
+    run = LedgerRun()
     for category in categories:
-        cache.record_whole_count(category, fetch_whole_count(fetcher, session, category))
+        try:
+            count = fetch_whole_count(fetcher, session, category, sleep=sleep)
+        except (FetchError, LedgerError, ParseError) as error:
+            # 全国件数はキャッシュを上書きしないだけ。毎回数え直すので次の回で拾える。
+            run.failed(f"{category.code} の全国件数", error, limit=failure_limit)
+        else:
+            cache.record_whole_count(category, count)
+            run.succeeded()
+        if run.abort_reason:
+            return run
+
         for area in areas:
             if not force and cache.is_done(category, area):
                 logger.debug("取得済みのため飛ばす: %s", entry_key(category, area))
                 continue
-            entry, raw = fetch_one(fetcher, session, category, area, now=now)
+            try:
+                entry, raw = fetch_one(fetcher, session, category, area, now=now, sleep=sleep)
+            except (FetchError, LedgerError, ParseError) as error:
+                run.failed(f"{category.code} × {area.name}", error, limit=failure_limit)
+                if run.abort_reason:
+                    return run
+                continue
             cache.record(category, area, entry, raw)
+            run.succeeded()
+    return run
 
 
 @dataclass(frozen=True)
