@@ -67,7 +67,12 @@ class SearchPage:
 class ListingRow:
     """検索結果一覧の 1 行 = 1 **指定**。CSV の 1 行 (棟) とは単位が違う。"""
 
-    daichou_id: str
+    category_code: str
+    """詳細ページのリンクの第 1 セグメント。**台帳ID ではない** (#74)。
+
+    現行 4 分類では台帳ID と同値だが、登録記念物 (411) の台帳ID は 401 になる。
+    """
+
     kanri_taishou_id: str
     name: str
     area: str
@@ -84,8 +89,13 @@ class ListingRow:
 
     @property
     def key(self) -> str:
-        """``(台帳ID, 管理対象ID)``。CSV の ``LedgerRow.key`` と同じ形。"""
-        return f"{self.daichou_id}/{self.kanri_taishou_id}"
+        """``(分類コード, 管理対象ID)``。
+
+        現行 4 分類では ``LedgerRow.key`` (台帳ID ベース) と同じ形になるので
+        そのまま突き合わせられる。台帳ID が分類コードと食い違う分類を足すときは、
+        突き合わせる側で揃える必要がある (#74)。
+        """
+        return f"{self.category_code}/{self.kanri_taishou_id}"
 
 
 @dataclass(frozen=True)
@@ -303,7 +313,7 @@ def _rows(parser: _PageParser) -> tuple[ListingRow, ...]:
         )
         rows.append(
             ListingRow(
-                daichou_id=ids[0],
+                category_code=ids[0],
                 kanri_taishou_id=ids[1],
                 name=named.text,
                 area=_cell_at(cells, area_column),

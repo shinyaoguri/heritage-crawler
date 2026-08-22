@@ -613,7 +613,7 @@ def _run_update(
         failures = [
             entry
             for entry in detail_cache.failures()
-            if detail_key(entry.daichou_id, entry.kanri_taishou_id) in wanted
+            if detail_key(entry.category_code, entry.kanri_taishou_id) in wanted
         ]
         print(format_detail_summary(summarize_details(detail_cache, plan.targets), failures))
 
@@ -683,7 +683,7 @@ def _fetch_detail(args: argparse.Namespace, cache: DetailCache, targets: Sequenc
         recheck_cache(cache, wanted)
     if args.retry_failed:
         failed = {
-            detail_key(entry.daichou_id, entry.kanri_taishou_id) for entry in cache.failures()
+            detail_key(entry.category_code, entry.kanri_taishou_id) for entry in cache.failures()
         }
         wanted = [target for target in wanted if target.key in failed]
         if not wanted:

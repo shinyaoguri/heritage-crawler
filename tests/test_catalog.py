@@ -33,12 +33,12 @@ def test_detail_url_ゼロ詰め形式のゼロを落とさない() -> None:
 
 
 @pytest.mark.parametrize(
-    ("daichou_id", "kanri_taishou_id"),
+    ("category_code", "kanri_taishou_id"),
     [("", "23"), ("102", ""), ("", "")],
 )
-def test_detail_url_空の_ID_を拒否する(daichou_id: str, kanri_taishou_id: str) -> None:
+def test_detail_url_空の_ID_を拒否する(category_code: str, kanri_taishou_id: str) -> None:
     with pytest.raises(ValueError):
-        detail_url(daichou_id, kanri_taishou_id)
+        detail_url(category_code, kanri_taishou_id)
 
 
 def test_取得対象の分類は_101_102_103_401() -> None:

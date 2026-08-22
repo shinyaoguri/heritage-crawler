@@ -397,7 +397,8 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         "ledger_id": row.get("台帳ID"),
         "managed_id": row.get("管理対象ID"),
         "category_name": category.name,
-        "url": detail_url(row.get("台帳ID"), row.get("管理対象ID")),
+        # URL の第 1 セグメントは分類コード。CSV の台帳ID 列ではない (#74)。
+        "url": detail_url(category.code, row.get("管理対象ID")),
         "designation_kind": DESIGNATION_KINDS[category.code],
     }
     labels: dict[str, str] = {}

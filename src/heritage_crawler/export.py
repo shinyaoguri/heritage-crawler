@@ -171,7 +171,7 @@ def build_dataset(
         built = _built(row, detail_cache, reuse, report)
         if built is None:
             continue
-        fetched_at = _fetched_at(detail_cache, row.get("台帳ID"), row.get("管理対象ID"))
+        fetched_at = _fetched_at(detail_cache, row.category.code, row.get("管理対象ID"))
         for dataset in _datasets_of(row.category, built.record, report):
             groups[(dataset, built.location.area)].append(built.record)
             labels[dataset].update(built.labels)
@@ -279,10 +279,13 @@ def _built(
     前回の出力で埋まる。取得に失敗した 1 件も前回の行が残るだけで済み、
     **失敗が行の消失にならない** (ADR 0018)。
     """
-    ledger_id, managed_id = row.get("台帳ID"), row.get("管理対象ID")
-    fetched = detail_cache.is_done(ledger_id, managed_id)
-    if fetched and (page := _read_page(detail_cache, ledger_id, managed_id, report)) is not None:
-        return build_record(row, page, report)
+    # キャッシュは分類コードで引く。台帳ID には複数の分類が同居する (#74)。
+    category_code, managed_id = row.category.code, row.get("管理対象ID")
+    fetched = detail_cache.is_done(category_code, managed_id)
+    if fetched:
+        page = _read_page(detail_cache, category_code, managed_id, report)
+        if page is not None:
+            return build_record(row, page, report)
     if reuse is not None and (record := reuse.records.get(row.key)) is not None:
         report.reused += 1
         return _reused(record)
@@ -306,25 +309,25 @@ def _reused(record: Mapping[str, Any]) -> Built:
     return Built(record=ordered, location=location)
 
 
-def _fetched_at(cache: DetailCache, ledger_id: str, managed_id: str) -> str:
+def _fetched_at(cache: DetailCache, category_code: str, managed_id: str) -> str:
     """この 1 件を取得した日時 (ISO 8601 の UTC)。記録が無ければ空。
 
     出典表記の利用日はここから決まる (ADR 0014)。**取得の記録が唯一の実測値**で、
     組み立てを走らせた日時では代用できない。
     """
-    entry = cache.entries.get(detail_key(ledger_id, managed_id))
+    entry = cache.entries.get(detail_key(category_code, managed_id))
     return entry.fetched_at if entry else ""
 
 
 def _read_page(
-    cache: DetailCache, ledger_id: str, managed_id: str, report: BuildReport
+    cache: DetailCache, category_code: str, managed_id: str, report: BuildReport
 ) -> DetailPage | None:
     """キャッシュ済みの生 HTML を読む。読めなければ報告に積んで None (呼び手が続ける)。"""
     try:
-        html = cache.read_html(ledger_id, managed_id).decode("utf-8")
+        html = cache.read_html(category_code, managed_id).decode("utf-8")
         return parse_detail_page(html)
     except (ParseError, UnicodeDecodeError, OSError) as error:
-        report.parse_failures.append(f"{ledger_id}/{managed_id}: {error}")
+        report.parse_failures.append(f"{category_code}/{managed_id}: {error}")
         return None
 
 

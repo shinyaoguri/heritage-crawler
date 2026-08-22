@@ -93,7 +93,7 @@ def put_detail(
     """詳細ページ 1 枚をキャッシュへ置く。"""
     cache.record(
         DetailEntry(
-            daichou_id=category.code,
+            category_code=category.code,
             kanri_taishou_id=managed_id,
             ok=True,
             byte_count=len(html),

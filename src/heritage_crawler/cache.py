@@ -152,7 +152,14 @@ class DetailEntry:
     拾い直せる必要がある (ADR 0006)。
     """
 
-    daichou_id: str
+    category_code: str
+    """**台帳ID ではなく分類コード** (``catalog.detail_url`` の第 1 セグメント)。
+
+    2026-08-23 まで ``daichou_id`` と呼んでいた (#74)。現行 4 分類では台帳ID と
+    分類コードが同値なので**値は変わらない**。旧名で書かれたマニフェストは
+    ``_migrated`` が読み替える。
+    """
+
     kanri_taishou_id: str
     ok: bool
     byte_count: int
@@ -164,8 +171,23 @@ class DetailEntry:
     error: str = ""
 
 
-def detail_key(daichou_id: str, kanri_taishou_id: str) -> str:
-    return f"{daichou_id}/{kanri_taishou_id}"
+def detail_key(category_code: str, kanri_taishou_id: str) -> str:
+    return f"{category_code}/{kanri_taishou_id}"
+
+
+def _migrated(payload: dict[str, Any]) -> dict[str, Any]:
+    """旧形式のマニフェスト 1 行を今の形にする。
+
+    ``daichou_id`` は分類コードの誤った呼び名だった (#74)。現行 4 分類では
+    台帳ID と分類コードが同値なので、**読み替えるだけで値は正しい**。
+    手元の 23,742 件を取り直さずに済ませるための橋渡しで、書き出しは新しい名前。
+
+    >>> _migrated({"daichou_id": "102", "kanri_taishou_id": "23"})
+    {'kanri_taishou_id': '23', 'category_code': '102'}
+    """
+    if "daichou_id" in payload:
+        payload["category_code"] = payload.pop("daichou_id")
+    return payload
 
 
 # ID をそのままパスに使うので、パス区切りなどが紛れ込んだら弾く。
@@ -193,11 +215,11 @@ class DetailCache:
     def manifest_path(self) -> Path:
         return self.detail_dir / "manifest.jsonl"
 
-    def html_path(self, daichou_id: str, kanri_taishou_id: str) -> Path:
-        for value in (daichou_id, kanri_taishou_id):
+    def html_path(self, category_code: str, kanri_taishou_id: str) -> Path:
+        for value in (category_code, kanri_taishou_id):
             if not _SAFE_ID.fullmatch(value):
                 raise ValueError(f"ファイル名にできない ID: {value!r}")
-        return self.detail_dir / daichou_id / f"{kanri_taishou_id}.html.gz"
+        return self.detail_dir / category_code / f"{kanri_taishou_id}.html.gz"
 
     @property
     def entries(self) -> dict[str, DetailEntry]:
@@ -221,7 +243,7 @@ class DetailCache:
                 )
             for number, line in enumerate(lines, start=2):
                 try:
-                    entry = DetailEntry(**json.loads(line))
+                    entry = DetailEntry(**_migrated(json.loads(line)))
                 except (json.JSONDecodeError, TypeError):
                     # 追記の途中で電源が落ちると末尾の行が欠ける。読める行だけ使い、
                     # 欠けた 1 件は未取得として取り直す。
@@ -229,18 +251,18 @@ class DetailCache:
                         "%s の %d 行目を読めなかった。無視する", self.manifest_path, number
                     )
                     continue
-                entries[detail_key(entry.daichou_id, entry.kanri_taishou_id)] = entry
+                entries[detail_key(entry.category_code, entry.kanri_taishou_id)] = entry
         return entries
 
-    def is_done(self, daichou_id: str, kanri_taishou_id: str) -> bool:
+    def is_done(self, category_code: str, kanri_taishou_id: str) -> bool:
         """再開時に飛ばしてよいか。
 
         記録があっても HTML の実体が消えていれば取り直す。
         """
-        entry = self.entries.get(detail_key(daichou_id, kanri_taishou_id))
+        entry = self.entries.get(detail_key(category_code, kanri_taishou_id))
         if entry is None or not entry.ok:
             return False
-        return self.html_path(daichou_id, kanri_taishou_id).exists()
+        return self.html_path(category_code, kanri_taishou_id).exists()
 
     def failures(self) -> list[DetailEntry]:
         """取得に失敗したまま残っているもの。同じキーは最後の結果で判断する。"""
@@ -249,12 +271,12 @@ class DetailCache:
     def record(self, entry: DetailEntry, html: bytes | None = None) -> None:
         """HTML を保存し、マニフェストへ 1 行書き足す。並列で呼んでよい。"""
         if html is not None:
-            path = self.html_path(entry.daichou_id, entry.kanri_taishou_id)
+            path = self.html_path(entry.category_code, entry.kanri_taishou_id)
             path.parent.mkdir(parents=True, exist_ok=True)
             # mtime を 0 に固定して、同じ HTML なら同じバイト列になるようにする。
             atomic_write(path, gzip.compress(html, mtime=0))
         with self._lock:
-            self.entries[detail_key(entry.daichou_id, entry.kanri_taishou_id)] = entry
+            self.entries[detail_key(entry.category_code, entry.kanri_taishou_id)] = entry
             self._append(entry)
 
     def _append(self, entry: DetailEntry) -> None:
@@ -265,9 +287,9 @@ class DetailCache:
                 manifest.write(json.dumps({"version": DETAIL_MANIFEST_VERSION}) + "\n")
             manifest.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
 
-    def read_html(self, daichou_id: str, kanri_taishou_id: str) -> bytes:
+    def read_html(self, category_code: str, kanri_taishou_id: str) -> bytes:
         """保存した生 HTML を読み戻す (解析層はキャッシュだけを見る)。"""
-        return gzip.decompress(self.html_path(daichou_id, kanri_taishou_id).read_bytes())
+        return gzip.decompress(self.html_path(category_code, kanri_taishou_id).read_bytes())
 
 
 def atomic_write(path: Path, data: bytes) -> None:

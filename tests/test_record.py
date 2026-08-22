@@ -337,3 +337,14 @@ def test_都道府県が決まらなければキーを出さない() -> None:
 
     assert "prefecture" not in record
     assert report.prefecture_unresolved == 1
+
+
+def test_url_は_CSV_の台帳ID_列ではなく分類コードで組む() -> None:
+    """詳細ページ URL の第 1 セグメントは分類コード (#74)。
+
+    現行 4 分類は台帳ID と分類コードが同値だが、411 (登録記念物) の台帳ID は
+    401 で、台帳ID で組むとエラーページが返る。``ledger_id`` は CSV の値のまま残す。
+    """
+    built = build_record(row(MONUMENTS, **{"台帳ID": "999"}), page(), BuildReport())
+    assert built.record["url"] == "https://kunishitei.bunka.go.jp/heritage/detail/401/2485"
+    assert built.record["ledger_id"] == "999"

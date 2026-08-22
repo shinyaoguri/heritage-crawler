@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeFetcher, make_csv, make_row
+from conftest import FakeFetcher, area_named, make_csv, make_row, put_ledger
 from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
-from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
+from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES, Category
 from heritage_crawler.detail import (
     DetailError,
     Presence,
@@ -199,7 +199,7 @@ def test_キャッシュのエラーページを検査して取り直す(cache_d
     for target, body in ((targets[0], HTML), (targets[1], ERROR_PAGE)):
         cache.record(
             DetailEntry(
-                daichou_id=target.daichou_id,
+                category_code=target.category_code,
                 kanri_taishou_id=target.kanri_taishou_id,
                 ok=True,
                 byte_count=len(body),
@@ -226,7 +226,7 @@ def test_失敗ぶんは後から拾い直せる(cache_dir: Path) -> None:
 
     cache = DetailCache(cache_dir)
     retry = [
-        Target(entry.daichou_id, entry.kanri_taishou_id, "") for entry in cache.failures()
+        Target(entry.category_code, entry.kanri_taishou_id, "") for entry in cache.failures()
     ]
     run = fetch_details([FakeFetcher({url("24"): HTML})], cache, retry)
 
@@ -383,3 +383,43 @@ def test_台帳が空なら先に何をすべきか言う() -> None:
 )
 def test_残り時間は桁を落として読ませる(seconds: float, expected: str) -> None:
     assert format_duration(seconds) == expected
+
+
+# --- 台帳ID と分類コードが食い違う分類 (#74) ---
+
+OTHER_LEDGER = Category("411", "登録記念物", 148)
+"""台帳ID (401) と分類コード (411) が違う分類 (2026-08-23 実測)。
+
+現行 4 分類はこの 2 つが同値なので、取り違えても表に出なかった。
+"""
+
+
+def ledger_with_other(cache_dir: Path) -> LedgerCache:
+    """台帳ID 401 の行を分類 411 として置いた台帳キャッシュ。"""
+    cache = LedgerCache(cache_dir)
+    put_ledger(
+        cache,
+        OTHER_LEDGER,
+        area_named("北海道"),
+        ["00003483"],
+        values={"台帳ID": "401", "名称": "函館公園"},
+    )
+    return cache
+
+
+def test_台帳ID_ではなく分類コードで詳細ページを引く(cache_dir: Path) -> None:
+    """URL の第 1 セグメントは分類コード (#74)。
+
+    登録記念物 (411) の台帳ID は 401 で、401 で組むと「必要な情報が足りません」の
+    エラーページが返る。
+    """
+    targets = read_targets(ledger_with_other(cache_dir), [OTHER_LEDGER])
+    assert [target.url for target in targets] == [
+        "https://kunishitei.bunka.go.jp/heritage/detail/411/00003483"
+    ]
+
+
+def test_台帳ID_が違ってもキャッシュのキーは分類コードで揃う(cache_dir: Path) -> None:
+    """キャッシュは取りに行った分類ごとに分ける。台帳ID では 401 と混ざる。"""
+    targets = read_targets(ledger_with_other(cache_dir), [OTHER_LEDGER])
+    assert [target.key for target in targets] == ["411/00003483"]
