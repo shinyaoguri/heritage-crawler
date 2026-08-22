@@ -15,7 +15,10 @@ from conftest import FakeFetcher, fixture, make_csv, put_ledger
 from heritage_crawler.cache import LedgerCache
 from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
 from heritage_crawler.ledger import (
+    AREA_COLUMN_INDEX,
+    AREA_COLUMN_LABELS,
     CSV_URL,
+    EXPECTED_CSV_HEADER,
     INDEX_URL,
     SEARCH_URL,
     LedgerError,
@@ -323,6 +326,37 @@ def test_列構成が違えば_504_の可能性を添えて失敗させる() -> 
     broken = make_csv([["x"]], header=["だれかのCSV"])
     with pytest.raises(LedgerError, match="504"):
         read_csv_rows(broken)
+
+
+@pytest.mark.parametrize("label", sorted(AREA_COLUMN_LABELS))
+def test_地域の列名は分類で変わる(label: str) -> None:
+    """12 列目の見出しだけが分類で変わる (2026-08-23 実測。#74)。
+
+    ``都道府県`` (101 系) / ``所有者住所（所在都道府県）`` (美術工芸品) /
+    ``地域`` (無形文化財) / ``都道府県、地域`` (無形民俗文化財)。
+    """
+    header = list(EXPECTED_CSV_HEADER)
+    header[AREA_COLUMN_INDEX] = label
+
+    rows = read_csv_rows(make_csv([SAMPLE_ROW], header=header))
+
+    assert rows[0][:2] == ["102", "23"]
+
+
+def test_知らない地域の列名は今までどおり弾く() -> None:
+    """緩めるのは 12 列目だけ。列構成そのものの変化は見逃さない。"""
+    header = list(EXPECTED_CSV_HEADER)
+    header[AREA_COLUMN_INDEX] = "所在の県"
+    with pytest.raises(LedgerError, match="504"):
+        read_csv_rows(make_csv([SAMPLE_ROW], header=header))
+
+
+def test_他の列の見出しが変われば弾く() -> None:
+    """12 列目を緩めたせいで他の列の変化まで通してしまわないこと。"""
+    header = list(EXPECTED_CSV_HEADER)
+    header[2] = "名前"
+    with pytest.raises(LedgerError, match="504"):
+        read_csv_rows(make_csv([SAMPLE_ROW], header=header))
 
 
 def test_CSV_でない応答は失敗させる() -> None:
