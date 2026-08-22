@@ -153,7 +153,9 @@ def test_地域欄の無い分類は全国を_1_回で取る() -> None:
 
 def test_都道府県と地域の両方を持つ分類がある() -> None:
     """無形民俗文化財 (302 / 322 / 312 / 323) は両方の option を持つ。"""
-    category = Category("302", "重要無形民俗文化財", 338, area_scope=AreaScope.PREFECTURE_AND_REGION)
+    category = Category(
+        "302", "重要無形民俗文化財", 338, area_scope=AreaScope.PREFECTURE_AND_REGION
+    )
 
     areas = search_areas(category)
 
