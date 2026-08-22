@@ -24,13 +24,13 @@ from typing import Any, Final
 from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write, detail_key
 from heritage_crawler.catalog import (
     KIND_SPLIT_CATEGORIES,
-    SEARCH_AREAS,
     TARGET_DATASETS,
     Area,
     Category,
     Dataset,
     datasets_for,
     datasets_of,
+    search_areas,
 )
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
 from heritage_crawler.ledger import LedgerRow, read_ledger_rows
@@ -138,7 +138,7 @@ def build_dataset(
     ledger_cache: LedgerCache,
     detail_cache: DetailCache,
     categories: Sequence[Category],
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     reuse: Reuse | None = None,
     checked: Checked | None = None,
@@ -342,7 +342,7 @@ def _settle_stale_files(
     groups: dict[tuple[Dataset, Area], list[dict[str, Any]]],
     report: BuildReport,
     *,
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> set[Dataset]:
     """今回書かなかった既存ファイルを、消すか報せるかに振り分ける (#57)。
 
@@ -357,9 +357,10 @@ def _settle_stale_files(
     # ① 全域を見ていない実行では、0 件の県と見ていない県の区別が付かない。
     # ② 詳細を取りこぼした実行では、行が落ちただけの県を消しかねない
     #    (200 で返るエラーページを掴んだ回も同じ。ADR 0011)。
-    decisive = (
-        set(areas) >= set(SEARCH_AREAS) and not report.missing_html and not report.parse_failures
+    full_coverage = areas is None or all(
+        set(areas) >= set(search_areas(category)) for category in categories
     )
+    decisive = full_coverage and not report.missing_html and not report.parse_failures
     produced = {dataset for dataset, _ in groups}
     emptied: set[Dataset] = set()
     for dataset in datasets_for(categories):

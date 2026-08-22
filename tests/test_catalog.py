@@ -18,7 +18,19 @@ from heritage_crawler import (
     TARGET_CATEGORIES,
     detail_url,
 )
-from heritage_crawler.catalog import DESIGNATED, MONUMENTS, TARGET_DATASETS, datasets_of
+from heritage_crawler.catalog import (
+    DESIGNATED,
+    MONUMENTS,
+    REGIONS,
+    REGISTERED,
+    TARGET_DATASETS,
+    WHOLE_AREA,
+    AreaScope,
+    Category,
+    areas_for,
+    datasets_of,
+    search_areas,
+)
 
 
 def test_detail_url_短い連番形式() -> None:
@@ -110,3 +122,61 @@ def test_slug_は_ASCII_に限る() -> None:
     """日本語のファイル名は macOS の NFD 正規化で同一性が崩れ、再開判定がずれる。"""
     for area in SEARCH_AREAS:
         assert re.fullmatch(r"[a-z][a-z0-9-]*", area.slug), area
+
+
+# --- 分類ごとの分割軸 (#74) ---
+
+
+def test_既定の分類は都道府県で引く() -> None:
+    """101 / 102 / 103 / 401 は 47 都道府県 + 受け皿 2 + 未正規化 2。"""
+    assert len(search_areas(REGISTERED)) == 51
+
+
+def test_地域の_9_区分しか持たない分類がある() -> None:
+    """無形文化財 (303 / 313) は都道府県では引けない (2026-08-23 実測)。"""
+    category = Category("303", "重要無形文化財", 100, area_scope=AreaScope.REGION)
+
+    names = [area.name for area in search_areas(category)]
+
+    assert names == ["全国一円", "東北", "関東", "北陸", "東海", "近畿", "中国", "四国", "九州"]
+
+
+def test_地域欄の無い分類は全国を_1_回で取る() -> None:
+    """選定保存技術 (304) には地域欄そのものが無い。空を送ると全国が返る。"""
+    category = Category("304", "選定保存技術", 82, area_scope=AreaScope.WHOLE)
+
+    areas = search_areas(category)
+
+    assert [area.name for area in areas] == [""]
+    assert areas[0].slug == "whole"
+
+
+def test_都道府県と地域の両方を持つ分類がある() -> None:
+    """無形民俗文化財 (302 / 322 / 312 / 323) は両方の option を持つ。"""
+    category = Category(
+        "302", "重要無形民俗文化財", 338, area_scope=AreaScope.PREFECTURE_AND_REGION
+    )
+
+    areas = search_areas(category)
+
+    assert len(areas) == 51 + 9
+    assert "全国一円" in [area.name for area in areas]
+
+
+def test_地域を明示すればそちらが優先される() -> None:
+    """``--area`` で絞ったときは分割軸より指定が勝つ。"""
+    only_tokyo = [area for area in PREFECTURES if area.name == "東京都"]
+
+    assert list(areas_for(REGISTERED, only_tokyo)) == only_tokyo
+    assert areas_for(REGISTERED, None) == search_areas(REGISTERED)
+
+
+def test_地域コードは分割軸をまたいでも重ならない() -> None:
+    """コードはキャッシュのファイル名になる。重なると別の地域の CSV を上書きする。"""
+    every = PREFECTURES + NON_PREFECTURE_AREAS + IRREGULAR_AREAS + REGIONS + (WHOLE_AREA,)
+
+    codes = [area.code for area in every]
+    slugs = [area.slug for area in every]
+
+    assert len(set(codes)) == len(codes)
+    assert len(set(slugs)) == len(slugs)

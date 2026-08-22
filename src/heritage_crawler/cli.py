@@ -23,13 +23,10 @@ from typing import Final
 
 from heritage_crawler.cache import DEFAULT_CACHE_DIR, DetailCache, LedgerCache, detail_key
 from heritage_crawler.catalog import (
-    IRREGULAR_AREAS,
-    NON_PREFECTURE_AREAS,
-    PREFECTURES,
-    SEARCH_AREAS,
     TARGET_CATEGORIES,
     Area,
     Category,
+    all_search_areas,
     datasets_for,
 )
 from heritage_crawler.detail import (
@@ -86,6 +83,12 @@ from heritage_crawler.update import (
     verify_removals,
 )
 
+ALL_AREAS: Final = all_search_areas(TARGET_CATEGORIES)
+"""``--area`` で選べる地域。分類ごとの分割軸をまとめたもの (重複は落とす)。
+
+**既定では使わない。** 指定が無ければ地域は分類ごとに決まる (``catalog.areas_for``)。
+"""
+
 CONTACT_ENV: Final = "HERITAGE_CRAWLER_CONTACT"
 MAX_CONCURRENCY: Final = 8
 """並列度の上限。
@@ -124,14 +127,12 @@ def _target_options(parser: argparse.ArgumentParser) -> None:
         "--area",
         action="append",
         dest="areas",
-        choices=[area.name for area in SEARCH_AREAS],
-        # 51 個を並べると usage が読めなくなる。分類と違って選択肢は伏せる
+        choices=[area.name for area in ALL_AREAS if area.name],
+        # 60 個を並べると usage が読めなくなる。分類と違って選択肢は伏せる
         metavar="地域名",
         help=(
-            f"対象の地域名 (既定: 全 {len(SEARCH_AREAS)} 地域 = "
-            f"{len(PREFECTURES)} 都道府県 + "
-            f"{'・'.join(area.name for area in NON_PREFECTURE_AREAS)} + "
-            f"未正規化の {len(IRREGULAR_AREAS)} 件)"
+            "対象の地域名 (指定しなければ分類ごとの分割軸。"
+            f"選べるのは全 {len(ALL_AREAS)} 地域)"
         ),
     )
 
@@ -370,7 +371,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ledger_cache = LedgerCache(args.cache_dir)
     categories = _selected(getattr(args, "categories", None), TARGET_CATEGORIES, "code")
-    areas = _selected(getattr(args, "areas", None), SEARCH_AREAS, "name")
+    # 指定が無ければ None。**地域は分類ごとに違う**ので、下流が分類から決める。
+    areas = _selected(getattr(args, "areas", None), ALL_AREAS, "name") or None
 
     if args.command == "compare-ledgers":
         return _run_compare(args, ledger_cache, categories)
@@ -415,7 +417,7 @@ def _run_ledger(
     args: argparse.Namespace,
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> int:
     run: LedgerRun | None = None
     if args.command == "fetch-ledger":
@@ -448,7 +450,7 @@ def _run_audit(
     args: argparse.Namespace,
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> int:
     """一覧を全ページ辿って台帳と突き合わせる (ADR 0017)。
 
@@ -494,7 +496,7 @@ def _run_detail(
     args: argparse.Namespace,
     ledger_cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> int:
     cache = DetailCache(args.cache_dir)
     targets = read_targets(ledger_cache, categories, areas)
@@ -512,7 +514,7 @@ def _run_build(
     args: argparse.Namespace,
     ledger_cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> int:
     """外部へは出ない。キャッシュだけを読んで JSON Lines を書く (ADR 0004)。"""
     report = build_dataset(
@@ -530,7 +532,7 @@ def _run_update(
     args: argparse.Namespace,
     ledger_cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area],
+    areas: Sequence[Area] | None,
 ) -> int:
     """月次の差分更新 (ADR 0018)。
 

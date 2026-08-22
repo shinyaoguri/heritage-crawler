@@ -14,12 +14,11 @@ from conftest import area_named, fixture, put_detail, put_ledger
 from heritage_crawler import cli
 from heritage_crawler.cache import DetailCache, LedgerCache
 from heritage_crawler.catalog import (
-    SEARCH_AREAS,
     SELECTED,
     TARGET_CATEGORIES,
     TARGET_DATASETS,
 )
-from heritage_crawler.cli import build_parser, main
+from heritage_crawler.cli import ALL_AREAS, build_parser, main
 from heritage_crawler.detail import Presence
 from heritage_crawler.ledger import LedgerRun
 from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
@@ -69,14 +68,19 @@ def test_分類のヘルプが語彙と食い違わない(capsys: pytest.Capture
 
 
 def test_地域のヘルプが語彙と食い違わない(capsys: pytest.CaptureFixture[str]) -> None:
-    """未正規化の受け皿 (IRREGULAR_AREAS) まで数に入っているか。
+    """未正規化の受け皿 (IRREGULAR_AREAS) と無形文化財の 9 地域まで数に入っているか。
 
-    地域は 51 個あって選択肢を出せない (metavar で伏せている) ぶん、ヘルプの
-    数が実態より小さいと、取りに行っている地域を黙って隠すことになる。
+    地域は選択肢を出せない (metavar で伏せている) ぶん、ヘルプの数が実態より
+    小さいと、取りに行っている地域を黙って隠すことになる。
     """
-    stated = re.search(r"地域名 \(既定: 全 (\d+) 地域", _help_of("fetch-ledger", capsys))
+    stated = re.search(r"選べるのは全 (\d+) 地域", _help_of("fetch-ledger", capsys))
     assert stated is not None, "ヘルプの書式が変わった。テストの読み取りを合わせる"
-    assert int(stated.group(1)) == len(SEARCH_AREAS)
+    assert int(stated.group(1)) == len(ALL_AREAS)
+
+
+def test_地域を指定しなければ分類ごとの分割軸に任せる() -> None:
+    """地域は分類ごとに違う (#74)。全分類に同じ 51 地域を投げない。"""
+    assert build_parser().parse_args(["fetch-ledger"]).areas is None
 
 
 def test_既定のレート上限は_1_req_s() -> None:

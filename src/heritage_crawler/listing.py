@@ -27,7 +27,7 @@ from math import ceil
 from typing import Final
 
 from heritage_crawler.cache import LedgerCache, atomic_write
-from heritage_crawler.catalog import SEARCH_AREAS, Area, Category
+from heritage_crawler.catalog import Area, Category
 from heritage_crawler.http import Fetcher
 from heritage_crawler.ledger import (
     AREA_COLUMN_INDEX,
@@ -161,7 +161,7 @@ class ListingAudit:
 def audit_listing(
     cache: LedgerCache,
     listing: Listing,
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
 ) -> ListingAudit:
     """収集した一覧とキャッシュ済み CSV のキー集合を突き合わせる。"""
     ledger_keys = {row.key for row in read_ledger_rows(cache, [listing.category], areas)}
