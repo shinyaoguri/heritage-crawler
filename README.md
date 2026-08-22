@@ -96,6 +96,11 @@
 ([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md)。
 `update-records`)。
 
+書き出したデータは**種別ごとの別リポジトリ**が持ち、閲覧サイトと配布物は
+`code4heritage/heritages` が受け持つ。3 つの持ち場の関係 — 週次の一巡・誰が何を
+書き込むか・どこで何を確かめるか — は
+**[データが流れる道すじ](docs/pipeline.md)** にまとめてある。
+
 ## 使い方
 
 ```bash
