@@ -274,8 +274,10 @@ CI ではこれを Python 3.12 / 3.13 / 3.14 のマトリクスで実行し、�
 
 - `.github/workflows/weekly.yml` — 週次の差分更新 (取得そのものが目的)。
   毎週月曜 03:00 JST。push には code4heritage org の GitHub App が要る
-  (secret は `DATA_PUSH_CLIENT_ID` と `DATA_PUSH_PRIVATE_KEY`)。**差分が無い週は
-  コミットが立たず、失敗したら Issue が立つ**。**前回の台帳は artifact で持ち回り**、
+  (secret は `DATA_PUSH_CLIENT_ID` と `DATA_PUSH_PRIVATE_KEY`)。**差分が無い週も
+  `status.json` のコミットが 1 つ立ち、失敗したら Issue が立つ** — 本文は押す前に
+  落ちたか押したあとかで書き分け、サイトの起動で落ちてもジョブは赤くしない
+  (ADR 0023 / #69)。**前回の台帳は artifact で持ち回り**、
   CSV 同士で突き合わせる (ADR 0020)。`audit-listing --recover` は CSV に変化が
   あった週だけ挟む — 都道府県が空の行は回収しないと網羅性が確かめられず、消えた
   指定を落とせなくなる (ADR 0017)。**README の件数表のドリフト検査もここに置く**

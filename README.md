@@ -358,8 +358,14 @@ gh workflow run weekly.yml -f dry-run=true
   中身が変わった週とはコミットメッセージで区別できる
   ([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
   同じ確認日をサイトの「最終確認」にも渡す
-- **失敗したら Issue が立つ** (同じ Issue が open なら追記する)。誰も見ていない
-  ところで走るので、止まっていることに気付けるようにしておく
+- **失敗したら Issue が立つ** (同じ Issue が open なら追記する。
+  `scripts/report-issue.sh`)。誰も見ていないところで走るので、止まっていることに
+  気付けるようにしておく。本文は**押す前に落ちたか、押したあとかで書き分ける** —
+  一律に「データは前回のまま」と書くと、更新済みのデータを古いものと誤認する
+- **サイトの起動で落ちてもジョブは赤くしない。** データの push は終わっており、
+  配信と配布は heritages 側の保険 cron が拾う。赤にすると**取得そのものが止まった
+  週と見分けが付かなくなる**ので、README の件数表と同じく Issue に残すだけにする
+  (サイトの「最終確認」は古いままになるので、その旨も Issue に書く)
 - 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
   どの地域でも引けず**、一覧から回収しないと網羅性が確かめられない
   ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))。
