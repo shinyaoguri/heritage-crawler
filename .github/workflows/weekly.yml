@@ -236,48 +236,16 @@ jobs:
           BOT: ${{ steps.token.outputs.app-slug }}[bot]
         run: |
           set -euo pipefail
-          changed=0
-          checked=0
           # 日付は日本時間で切る — 巡回の枠を決めるのも確認日も日本時間 (ADR 0020 / ADR 0023)
           today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
-          {
-            echo '## push'
-            while read -r repo; do
-              cd "${GITHUB_WORKSPACE}/${DATA_DIR}/${repo}"
-              git add -A
-              if git diff --cached --quiet; then
-                # status.json すら動いていない = update-records がこのリポジトリに
-                # 触れていない (分類や地域を絞った実行)。確かめた証跡が無いので押さない。
-                echo "- ${repo}: 差分なし (このリポジトリは対象外)"
-                continue
-              fi
-              # **中身が動いたかは data / meta.json / removed.jsonl で見る。**
-              # status.json は毎週動くので、そのまま数えると全部が「更新」に見える。
-              if git diff --cached --quiet -- data meta.json removed.jsonl; then
-                message="chore(data): ${today} に確認 (差分なし)"
-                note="- ${repo}: 確認のみ"
-                checked=$((checked + 1))
-              else
-                message="chore(data): ${today} の差分を反映"
-                note="- ${repo}: $(git diff --cached --shortstat)"
-                changed=$((changed + 1))
-              fi
-              # clone のときに埋め込んだトークンは期限切れになりうる。取り直した
-              # ものへ張り替えてから押す。
-              git remote set-url origin \
-                "https://x-access-token:${GH_TOKEN}@github.com/code4heritage/${repo}.git"
-              git -c "user.name=${BOT}" \
-                  -c "user.email=${BOT}@users.noreply.github.com" \
-                  commit --quiet -m "${message}" \
-                                 -m "出典: 国指定文化財等データベース (文化庁)" \
-                                 -m "実行: ${RUN_URL}"
-              git push --quiet
-              echo "${note}"
-            done <"${GITHUB_WORKSPACE}/repos.txt"
-            echo
-            echo "中身が変わったリポジトリ: ${changed} / 確認のみ: ${checked}"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "changed=${changed}" >>"$GITHUB_OUTPUT"
+          # **押す手順はスクリプトが持つ** (`scripts/test-push-data-repos.sh` が検査する)。
+          # 数の出力もそちらから書く — ここで `| tee` に通すとサブシェルになり、
+          # 数えた値が親へ戻らないまま $GITHUB_OUTPUT へ 0 が書かれる (#67)。
+          summary="${RUNNER_TEMP}/push-summary.md"
+          ./scripts/push-data-repos.sh \
+            "${GITHUB_WORKSPACE}/repos.txt" "${GITHUB_WORKSPACE}/${DATA_DIR}" "$today" >"$summary"
+          cat "$summary"
+          cat "$summary" >>"$GITHUB_STEP_SUMMARY"
 
       # **次回の基準になるので、push の成否によらず必ず残す。** ここを落とすと
       # 翌週は「前回の台帳が無い」状態になり、台帳の値の変化を拾えなくなる。
@@ -356,6 +324,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CHANGED: ${{ steps.push.outputs.changed }}
+          CHECKED: ${{ steps.push.outputs.checked }}
         run: |
           set -euo pipefail
           today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
@@ -363,7 +333,8 @@ jobs:
             echo "週次の差分更新は**データの push まで終えた**が、"
             echo "\`code4heritage/heritages\` を起こせなかった。"
             echo
-            echo "- **データリポジトリは更新済み** (確認日 ${today})。行が消えることはない"
+            echo "- **データリポジトリは更新済み** (確認日 ${today}。中身が変わった" \
+                 "${CHANGED:-?} / 確認のみ ${CHECKED:-?})。行が消えることはない"
             echo "- **サイトの「最終確認」は古いまま。** 配信と配布は heritages 側の"
             echo "  保険 cron (毎週月曜 08:00 JST) が拾うが、そちらには確認日が渡らない"
             echo
@@ -418,6 +389,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUSHED: ${{ steps.push.outcome }}
+          CHANGED: ${{ steps.push.outputs.changed }}
+          CHECKED: ${{ steps.push.outputs.checked }}
         run: |
           set -euo pipefail
           title="週次の差分更新が失敗した"
@@ -427,7 +400,8 @@ jobs:
             # **押す前に落ちたのか、押したあとかで実態が違う。** 一律に「前回のまま」と
             # 書くと、更新済みのデータを古いものと誤認する (2026-08-22 に実際に起きた)。
             if [ "${PUSHED:-}" = "success" ]; then
-              echo "**データリポジトリへの push は終わっている。**確認日 (\`status.json\`) も"
+              echo "**データリポジトリへの push は終わっている** (中身が変わった" \
+                   "${CHANGED:-?} / 確認のみ ${CHECKED:-?})。確認日 (\`status.json\`) も"
               echo "進んでいるので、落ちたのはそのあとの工程。データは前回のものではない。"
             else
               echo "**押す前に落ちたので、データリポジトリは前回のまま。**行が消えることはない。"

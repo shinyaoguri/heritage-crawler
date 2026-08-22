@@ -358,6 +358,10 @@ gh workflow run weekly.yml -f dry-run=true
   中身が変わった週とはコミットメッセージで区別できる
   ([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
   同じ確認日をサイトの「最終確認」にも渡す
+- **押す手順は `scripts/push-data-repos.sh`。** 10 リポジトリへ実際に押す唯一の
+  場所なので、ワークフローの YAML に埋めず、テストを当ててある
+  (`scripts/test-push-data-repos.sh` が手元の bare リポジトリを押し先にして、
+  コミットメッセージの出し分けと数え上げを検査する)
 - **失敗したら Issue が立つ** (同じ Issue が open なら追記する。
   `scripts/report-issue.sh`)。誰も見ていないところで走るので、止まっていることに
   気付けるようにしておく。本文は**押す前に落ちたか、押したあとかで書き分ける** —
