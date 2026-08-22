@@ -13,21 +13,33 @@ import pytest
 
 from conftest import FakeFetcher, Responder, fixture, put_ledger
 from heritage_crawler.cache import LedgerCache
-from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
+from heritage_crawler.catalog import (
+    DESIGNATED,
+    MONUMENTS,
+    REGISTERED_MONUMENTS,
+    SEARCH_AREAS,
+)
 from heritage_crawler.http import FormFields
-from heritage_crawler.ledger import INDEX_URL, SEARCH_URL, Session, read_ledger_rows
+from heritage_crawler.ledger import (
+    INDEX_URL,
+    SEARCH_URL,
+    Session,
+    read_csv_rows,
+    read_ledger_rows,
+)
 from heritage_crawler.listing import (
     Listing,
+    ListingAudit,
     ListingError,
     audit_listing,
     fetch_listing,
     format_audits,
     recover_missing,
 )
-from heritage_crawler.search_page import ParseError
+from heritage_crawler.search_page import ListingRow, ParseError
 
-CATEGORY = TARGET_CATEGORIES[3]  # 401 (指定 = 1 行。一覧と突き合わせられる)
-EXPANDED = TARGET_CATEGORIES[1]  # 102 (1 指定が複数の棟に展開される)
+CATEGORY = MONUMENTS  # 401 (指定 = 1 行。一覧と突き合わせられる)
+EXPANDED = DESIGNATED  # 102 (1 指定が複数の棟に展開される)
 HOKKAIDO = SEARCH_AREAS[0]
 
 LISTED_KEYS = ["2", "3420", "00003542", "1979", "4001"]
@@ -214,3 +226,29 @@ def test_一覧が件数表示と合わなければ報告に出す(cache_dir: Pa
     put_ledger(cache, CATEGORY, HOKKAIDO, LISTED_KEYS)
     partial = dataclasses.replace(collect(), rows=collect().rows[:2])
     assert "件数表示と合わない" in format_audits([audit_listing(cache, partial, SEARCH_AREAS)])
+
+
+def test_回収した行の台帳ID_は分類側から採る(cache_dir: Path) -> None:
+    """一覧が持つのは分類コードで、台帳ID ではない (#74)。
+
+    登録記念物 (411) の一覧リンクは ``/heritage/detail/411/…`` だが、台帳ID 列に
+    入るべき値は 401。ここを取り違えると、地域別 CSV から来た同じ指定と別キーになり、
+    差分更新で「追加」と「削除」に化ける。
+    """
+    cache = LedgerCache(cache_dir)
+    row = ListingRow(
+        category_code="411", kanri_taishou_id="00003483", name="函館公園", area="北海道"
+    )
+    audit = ListingAudit(
+        listing=Listing(
+            category=REGISTERED_MONUMENTS, hit_count=1, rows=(row,), duplicate_keys=()
+        ),
+        ledger_key_count=0,
+        missing=(row,),
+        unexpected=(),
+    )
+
+    recover_missing(cache, audit)
+
+    written = read_csv_rows(cache.recovered_csv_path(REGISTERED_MONUMENTS).read_bytes())
+    assert written[0][:2] == ["401", "00003483"]

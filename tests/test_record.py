@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_row
-from heritage_crawler.catalog import TARGET_CATEGORIES
+from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED
 from heritage_crawler.detail_page import DetailPage
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.record import (
@@ -22,7 +22,7 @@ from heritage_crawler.record import (
     routing_kinds,
 )
 
-REGISTERED, DESIGNATED, SELECTED, MONUMENTS = TARGET_CATEGORIES  # 101 / 102 / 103 / 401
+# 101 / 102 / 103 / 401。分類は 19 個あるので、位置ではなく名前で引く。
 
 
 def row(category=DESIGNATED, **columns: str) -> LedgerRow:  # type: ignore[no-untyped-def]

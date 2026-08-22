@@ -13,7 +13,7 @@ import pytest
 
 from conftest import FakeFetcher, fixture, make_csv, put_ledger
 from heritage_crawler.cache import LedgerCache
-from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
+from heritage_crawler.catalog import DESIGNATED, MONUMENTS, SEARCH_AREAS
 from heritage_crawler.ledger import (
     AREA_COLUMN_INDEX,
     AREA_COLUMN_LABELS,
@@ -29,8 +29,8 @@ from heritage_crawler.ledger import (
     summarize,
 )
 
-CATEGORY = TARGET_CATEGORIES[1]  # 102 (1 指定が複数の棟に展開される)
-UNEXPANDED = TARGET_CATEGORIES[3]  # 401 (指定 = 1 行)
+CATEGORY = DESIGNATED  # 102 (1 指定が複数の棟に展開される)
+UNEXPANDED = MONUMENTS  # 401 (指定 = 1 行)
 HOKKAIDO = SEARCH_AREAS[0]
 AOMORI = SEARCH_AREAS[1]
 TOKYO = SEARCH_AREAS[12]

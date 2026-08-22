@@ -371,8 +371,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ledger_cache = LedgerCache(args.cache_dir)
     categories = _selected(getattr(args, "categories", None), TARGET_CATEGORIES, "code")
-    # 指定が無ければ None。**地域は分類ごとに違う**ので、下流が分類から決める。
-    areas = _selected(getattr(args, "areas", None), ALL_AREAS, "name") or None
+    # 指定が無ければ None。**地域は分類ごとに違う**ので、下流が分類から決める
+    # (catalog.areas_for)。_selected は指定が無いと全部を返すので、ここでは通さない。
+    wanted_areas = getattr(args, "areas", None)
+    areas = _selected(wanted_areas, ALL_AREAS, "name") if wanted_areas else None
 
     if args.command == "compare-ledgers":
         return _run_compare(args, ledger_cache, categories)

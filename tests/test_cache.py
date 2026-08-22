@@ -15,9 +15,9 @@ from heritage_crawler.cache import (
     LedgerCache,
     LedgerEntry,
 )
-from heritage_crawler.catalog import SEARCH_AREAS, TARGET_CATEGORIES
+from heritage_crawler.catalog import DESIGNATED, SEARCH_AREAS
 
-CATEGORY = TARGET_CATEGORIES[1]  # 102
+CATEGORY = DESIGNATED  # 102
 HOKKAIDO = SEARCH_AREAS[0]
 TOKYO = SEARCH_AREAS[12]
 
