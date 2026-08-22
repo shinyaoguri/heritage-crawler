@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
@@ -199,7 +199,78 @@ MEASURES_LABEL: Final = "指定等後に行った措置"
 
 ANNEX_KEYS: Final[dict[str, Field]] = {"附名称": Field("name"), "附員数": Field("quantity")}
 ANNEX_LABEL: Final = "附指定"
+ANNEX_LABELS: Final[frozenset[str]] = frozenset({ANNEX_LABEL, "附"})
+"""附指定の関連情報の見出し。**民俗文化財 (301 / 311) では ``附`` と短い** (実測)。"""
+
 ATTACHMENT_LABEL: Final = "添付ファイル"
+
+ITEMIZATION_LABEL: Final = "一つ書"
+"""美術工芸品 (201 / 211) の指定の内訳。一覧は空で、有無だけが読める。"""
+
+HOLDER_LABELS: Final[frozenset[str]] = frozenset(
+    {
+        "保持者情報（保持者／芸名・雅号）",
+        "団体情報",
+        "保持者",
+        "保持団体",
+        "保持団体（関係技芸者の団体）",
+    }
+)
+"""保持者・保持団体の一覧の見出し (303 / 323 / 313 / 304。2026-08-23 実測)。
+
+見出しは分類でまちまちだが、中身は同じ「誰が認定されているか」。
+無形文化財ではこれが中核のデータで、**主情報には保持者が出てこない**。
+"""
+
+HOLDER_KEYS: Final[dict[str, Field]] = {
+    # 個人 (保持者・関係技芸者)
+    "保持者（関係技芸者）の氏名": Field("name"),
+    "保持者（関係技芸者）の氏名 ふりがな": Field("name_kana"),
+    "保持者（関係技芸者）の芸名・雅号等": Field("alias"),
+    "保持者（関係技芸者）の芸名・雅号等 ふりがな": Field("alias_kana"),
+    # 団体 (303 / 323 は「団体情報」、304 は「保持団体（関係技芸者の団体）」)
+    "団体情報の名称": Field("name"),
+    "団体情報の名称 ふりがな": Field("name_kana"),
+    "団体情報の代表者氏名": Field("representative"),
+    "団体情報の代表者氏名 ふりがな": Field("representative_kana"),
+    "団体情報の代表者雅号等": Field("alias"),
+    "団体情報の代表者雅号等 ふりがな": Field("alias_kana"),
+    "保持団体（関係技芸者の団体）の名称": Field("name"),
+    "保持団体（関係技芸者の団体）の名称 ふりがな": Field("name_kana"),
+    "保持団体（関係技芸者の団体）の代表者氏名": Field("representative"),
+    "保持団体（関係技芸者の団体）の代表者氏名 ふりがな": Field("representative_kana"),
+    "保持団体（関係技芸者の団体）の代表者雅号等": Field("alias"),
+    "保持団体（関係技芸者の団体）の代表者雅号等 ふりがな": Field("alias_kana"),
+    # 認定そのもの。304 だけ「指名」と書く
+    "認定・指定年月日": _date("date"),
+    "認定・指名年月日": _date("date"),
+    "認定次": Field("round"),
+    "認定区分": Field("certification_class"),
+    "認定書の交付又は再発行の年月日（選択書の交付年月日）": _date("certificate_date"),
+    "認定書（選択書）の記号番号": Field("certificate_number"),
+}
+"""保持者・保持団体 1 件ぶんの対応表。
+
+個人と団体で欄の名前が違うが、**意味が同じなら同じキーへ寄せる** (ADR 0008 の 1)。
+個人か団体かは ``kind`` で残すので、寄せても区別は失われない。
+"""
+
+GROUP_NAME_LABELS: Final[frozenset[str]] = frozenset(
+    {"団体情報の名称", "保持団体（関係技芸者の団体）の名称"}
+)
+"""この欄があれば団体。無ければ個人 (``HOLDER_KIND_*``)。"""
+
+HOLDER_KIND_PERSON: Final = "保持者"
+HOLDER_KIND_GROUP: Final = "保持団体"
+
+CATEGORY_NAMES: Final[frozenset[str]] = frozenset(
+    category.name for category in CATEGORIES_BY_CODE.values()
+)
+"""分類名。**901 の関連情報の見出しはこれ**で、他分類の文化財へのリンクになる。
+
+世界遺産は既指定の文化財を束ねたものなので、構成資産が別の分類として現れる
+(ADR 0025)。有無だけを ``has_related_properties`` に採る。
+"""
 
 MEASURE_KEYS: Final[dict[str, Field]] = {
     "異動年月日": _date("date"),
@@ -229,8 +300,11 @@ DERIVED_LABELS: Final[dict[str, str]] = {
     "detailed_description": "詳細解説",
     "annexes": ANNEX_LABEL,
     "measures": MEASURES_LABEL,
+    "holders": "保持者・保持団体",
     "has_attachment": f"{ATTACHMENT_LABEL}の有無",
     "has_measures": f"{MEASURES_LABEL}の有無",
+    "has_itemization": f"{ITEMIZATION_LABEL}の有無",
+    "has_related_properties": "関連する文化財の有無",
     "has_photo": "写真の有無",
 }
 """原文ラベルを持たないキーの表示名。
@@ -316,8 +390,11 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "detailed_description",
     "annexes",
     "measures",
+    "holders",
     "has_attachment",
     "has_measures",
+    "has_itemization",
+    "has_related_properties",
     "has_photo",
 )
 """JSON Lines のキーの並び。順序を固定しないと、同じ内容でも差分が出る。"""
@@ -503,15 +580,21 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
 
     _set_or_drop(values, "description", page.description)
     _set_or_drop(values, "detailed_description", page.detailed_description)
-    annexes, measures = _rellists(page, category, report, labels)
-    _set_or_drop(values, "annexes", annexes)
-    _set_or_drop(values, "measures", measures)
+    rellists = _rellists(page, category, report, labels)
+    _set_or_drop(values, "annexes", rellists.annexes)
+    _set_or_drop(values, "measures", rellists.measures)
+    _set_or_drop(values, "holders", rellists.holders)
     for label, present in page.related.items():
         if label == ATTACHMENT_LABEL:
             values["has_attachment"] = present
         elif label == MEASURES_LABEL:
             values["has_measures"] = present
-        elif label != ANNEX_LABEL:
+        elif label == ITEMIZATION_LABEL:
+            values["has_itemization"] = present
+        elif label in CATEGORY_NAMES:
+            # 901 の関連情報は他分類の文化財へのリンク = 構成資産 (実測)。
+            values["has_related_properties"] = values.get("has_related_properties") or present
+        elif label not in ANNEX_LABELS and label not in HOLDER_LABELS:
             report.unknown_labels[f"{category.code} 関連情報:{label}"] += 1
     values["has_photo"] = page.has_photo
 
@@ -619,29 +702,64 @@ def _coordinate(raw: str) -> float | None:
         return None
 
 
+@dataclass
+class Rellists:
+    """``detail_rellist_*`` モーダルから読んだ一覧。"""
+
+    annexes: list[dict[str, Any]] = field(default_factory=list)
+    measures: list[dict[str, Any]] = field(default_factory=list)
+    holders: list[dict[str, Any]] = field(default_factory=list)
+
+
 def _rellists(
     page: DetailPage, category: Category, report: BuildReport, labels: dict[str, str]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """``detail_rellist_*`` モーダルを附指定と措置に振り分ける (附指定, 措置)。
+) -> Rellists:
+    """``detail_rellist_*`` モーダルを附指定・措置・保持者に振り分ける。
 
-    分類ではなくラベルで見分ける。同じモーダルが建造物系では附指定の一覧、
-    401 では指定等後に行った措置の履歴になっているため。
+    **分類ではなくラベルで見分ける。** 同じモーダルが建造物系では附指定の一覧、
+    401 では指定等後に行った措置の履歴、無形文化財では保持者・保持団体の一覧に
+    なっているため (ADR 0012 / ADR 0025)。
     """
-    annexes: list[dict[str, Any]] = []
-    measures: list[dict[str, Any]] = []
+    found = Rellists()
     for raw in page.rellists:
-        is_measure = bool(raw.keys() & MEASURE_KEYS.keys())
-        keys = MEASURE_KEYS if is_measure else ANNEX_KEYS
-        target = measures if is_measure else annexes
-        prefix = "measures" if is_measure else "annexes"
+        if raw.keys() & MEASURE_KEYS.keys():
+            keys, target, prefix = MEASURE_KEYS, found.measures, "measures"
+        elif raw.keys() & HOLDER_KEYS.keys():
+            keys, target, prefix = HOLDER_KEYS, found.holders, "holders"
+        else:
+            keys, target, prefix = ANNEX_KEYS, found.annexes, "annexes"
         if entry := _rellist_entry(raw, keys, category, report, labels, prefix):
+            if prefix == "holders":
+                entry = {"kind": _holder_kind(raw), **entry}
             target.append(entry)
 
-    for label, entries in ((ANNEX_LABEL, annexes), (MEASURES_LABEL, measures)):
-        if page.related.get(label) and not entries:
-            # 「あり」と書いてあるのに一覧が読めていない。取りこぼしを疑う。
-            report.missing_rellists[f"{category.code} {label}"] += 1
-    return annexes, measures
+    _check_missing(page, category, report, found)
+    return found
+
+
+def _holder_kind(raw: dict[str, str]) -> str:
+    """個人か団体か。**欄の名前で決まる** — 値の中身は見ない。"""
+    if raw.keys() & GROUP_NAME_LABELS:
+        return HOLDER_KIND_GROUP
+    return HOLDER_KIND_PERSON
+
+
+def _check_missing(
+    page: DetailPage, category: Category, report: BuildReport, found: Rellists
+) -> None:
+    """「あり」と書いてあるのに一覧が読めていないものを報告に積む。
+
+    ``一つ書`` (201 / 211) は一覧そのものが空なので数えない (実測)。
+    """
+    groups: list[tuple[Collection[str], list[dict[str, Any]]]] = [
+        (ANNEX_LABELS, found.annexes),
+        ({MEASURES_LABEL}, found.measures),
+        (HOLDER_LABELS, found.holders),
+    ]
+    for wanted, entries in groups:
+        for label in wanted:
+            if page.related.get(label) and not entries:
+                report.missing_rellists[f"{category.code} {label}"] += 1
 
 
 def _rellist_entry(

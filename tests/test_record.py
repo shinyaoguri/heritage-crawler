@@ -12,6 +12,7 @@ from conftest import make_row
 from heritage_crawler.catalog import (
     CONSERVATION_TECHNIQUES,
     DESIGNATED,
+    DOCUMENTED_INTANGIBLE,
     DOCUMENTED_INTANGIBLE_FOLK,
     FINE_ARTS,
     INTANGIBLE,
@@ -20,6 +21,7 @@ from heritage_crawler.catalog import (
     REGISTERED,
     REGISTERED_MONUMENTS,
     SELECTED,
+    TANGIBLE_FOLK,
     WORLD_HERITAGE,
 )
 from heritage_crawler.detail_page import DetailPage
@@ -479,3 +481,121 @@ def test_世界遺産の構成資産を残す() -> None:
 
     assert built.record["component_assets"] == "中尊寺、毛越寺、観自在王院跡"
     assert built.record["criteria"] == ["平泉の浄土庭園は…"]
+
+
+# --- 関連情報モーダル (ADR 0025) ---
+
+
+def holders_page(*entries: dict[str, str], related: str = "団体情報") -> DetailPage:
+    """保持者・保持団体の一覧を持つ詳細ページ。"""
+    return DetailPage(
+        fields={"名称": "伊勢型紙"},
+        related={related: True},
+        rellists=tuple(entries),
+    )
+
+
+def test_保持団体の一覧を読む() -> None:
+    """無形文化財では主情報に保持者が出てこない。ここが中核のデータになる。"""
+    built = build_record(
+        row(INTANGIBLE),
+        holders_page(
+            {
+                "団体情報の名称": "伊勢型紙技術保存会",
+                "団体情報の名称 ふりがな": "いせかたがみぎじゅつほぞんかい",
+                "団体情報の代表者氏名": "内田勲",
+                "認定・指定年月日": "1993.04.15(平成5.04.15)",
+            }
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["holders"] == [
+        {
+            "kind": "保持団体",
+            "name": "伊勢型紙技術保存会",
+            "name_kana": "いせかたがみぎじゅつほぞんかい",
+            "representative": "内田勲",
+            "date": "1993-04-15",
+        }
+    ]
+
+
+def test_保持者と保持団体は欄の名前で見分ける() -> None:
+    """同じ ``name`` へ寄せても、個人か団体かは失われない。"""
+    built = build_record(
+        row(DOCUMENTED_INTANGIBLE),
+        holders_page(
+            {
+                "保持者（関係技芸者）の氏名": "高坂水雄",
+                "保持者（関係技芸者）の芸名・雅号等": "高坂雄水",
+            },
+            related="保持者情報（保持者／芸名・雅号）",
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["holders"] == [
+        {"kind": "保持者", "name": "高坂水雄", "alias": "高坂雄水"}
+    ]
+
+
+def test_選定保存技術は認定を指名と書く() -> None:
+    """304 だけ ``認定・指名年月日``。同じ ``date`` へ寄せる。"""
+    built = build_record(
+        row(CONSERVATION_TECHNIQUES),
+        holders_page(
+            {
+                "保持団体（関係技芸者の団体）の名称": "阿波藍製造技術保存会",
+                "認定・指名年月日": "1978.05.09(昭和53.05.09)",
+            },
+            related="保持団体（関係技芸者の団体）",
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["holders"][0]["date"] == "1978-05-09"
+
+
+def test_民俗文化財の附は附指定へ寄せる() -> None:
+    """301 / 311 では見出しが ``附`` と短い。附指定と同じもの。"""
+    report = BuildReport()
+    build_record(
+        row(TANGIBLE_FOLK),
+        DetailPage(fields={"名称": "アイヌの生活用具"}, related={"附": True}),
+        report,
+    )
+
+    assert not report.unknown_labels
+    # 「あり」なのに一覧が空なので、取りこぼしとして報告に出る
+    assert dict(report.missing_rellists) == {"301 附": 1}
+
+
+def test_美術工芸品の一つ書は有無だけ残す() -> None:
+    """一覧そのものが空なので、取りこぼしとしては数えない (実測)。"""
+    report = BuildReport()
+    built = build_record(
+        row(FINE_ARTS),
+        DetailPage(fields={"名称": "紙本著色遊行上人絵"}, related={"一つ書": True}),
+        report,
+    )
+
+    assert built.record["has_itemization"] is True
+    assert not report.unknown_labels
+    assert not report.missing_rellists
+
+
+def test_世界遺産の関連情報は他分類へのリンク() -> None:
+    """構成資産が別の分類として現れる (ADR 0025)。分類名を未知として数えない。"""
+    report = BuildReport()
+    built = build_record(
+        row(WORLD_HERITAGE),
+        DetailPage(
+            fields={"名称": "平泉"},
+            related={"国宝・重要文化財（建造物）": True, "史跡名勝天然記念物": True},
+        ),
+        report,
+    )
+
+    assert built.record["has_related_properties"] is True
+    assert not report.unknown_labels
