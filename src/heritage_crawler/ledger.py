@@ -66,6 +66,24 @@ CONSECUTIVE_FAILURE_LIMIT: Final = 5
 重いので、詳細ページ (``detail.CONSECUTIVE_FAILURE_LIMIT`` = 10) より早く止める。
 """
 
+AREA_COLUMN_INDEX: Final = 11
+"""地域にあたる列の位置 (0 起点)。**見出しが分類で変わる唯一の列** (2026-08-23 実測)。"""
+
+AREA_COLUMN_LABELS: Final[frozenset[str]] = frozenset(
+    {
+        "都道府県",  # 101 / 102 / 103 / 301 / 311 / 401 / 411 / 412 / 901
+        "所有者住所（所在都道府県）",  # 201 / 211 / 202 (美術工芸品は所有者の住所で引く)
+        "地域",  # 303 / 313 (全国一円・東北・関東… の 9 区分しかない)
+        "都道府県、地域",  # 302 / 322 / 312 / 323 (都道府県と 9 区分が混在する)
+    }
+)
+"""12 列目に現れる見出し (#74)。
+
+列の**意味**も分類で変わる — 美術工芸品は所有者の住所で、無形文化財は
+都道府県ですらない。ここでは受け取れるかだけを見て、値の解釈はしない
+(下流が CSV から採るのは緯度経度だけ。ADR 0008)。
+"""
+
 EXPECTED_CSV_HEADER: Final[tuple[str, ...]] = (
     "台帳ID",
     "管理対象ID",
@@ -171,7 +189,7 @@ def read_csv_rows(raw: bytes) -> list[list[str]]:
     if not rows:
         raise LedgerError("CSV が空だった")
     header = tuple(rows[0])
-    if header != EXPECTED_CSV_HEADER:
+    if not _header_matches(header):
         raise LedgerError(
             "CSV のヘッダが既知の 18 列と一致しない。"
             "csv-list へ送る hidden 値が応答 HTML から取り出したものになっているか"
@@ -179,6 +197,34 @@ def read_csv_rows(raw: bytes) -> list[list[str]]:
             f" 実際のヘッダ: {header}"
         )
     return rows[1:]
+
+
+def _header_matches(header: tuple[str, ...]) -> bool:
+    """受け取れる列構成か。**12 列目だけは分類で見出しが変わる** (#74)。
+
+    残る 17 列は今までどおり厳密に見る。緩めるのを 1 列に限れば、列構成そのものが
+    変わったとき (相手先の仕様変更や 504 の HTML) は今までどおり弾ける。
+
+    >>> _header_matches(EXPECTED_CSV_HEADER)
+    True
+    >>> _header_matches(
+    ...     EXPECTED_CSV_HEADER[:AREA_COLUMN_INDEX]
+    ...     + ("地域",)
+    ...     + EXPECTED_CSV_HEADER[AREA_COLUMN_INDEX + 1 :]
+    ... )
+    True
+    >>> _header_matches(("だれかのCSV",))
+    False
+    """
+    if len(header) != len(EXPECTED_CSV_HEADER):
+        return False
+    if header[AREA_COLUMN_INDEX] not in AREA_COLUMN_LABELS:
+        return False
+    others = slice(AREA_COLUMN_INDEX + 1, None)
+    return (
+        header[:AREA_COLUMN_INDEX] == EXPECTED_CSV_HEADER[:AREA_COLUMN_INDEX]
+        and header[others] == EXPECTED_CSV_HEADER[others]
+    )
 
 
 class Session:

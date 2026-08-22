@@ -30,6 +30,7 @@ from heritage_crawler.cache import LedgerCache, atomic_write
 from heritage_crawler.catalog import SEARCH_AREAS, Area, Category
 from heritage_crawler.http import Fetcher
 from heritage_crawler.ledger import (
+    AREA_COLUMN_INDEX,
     EXPECTED_CSV_HEADER,
     SEARCH_URL,
     Session,
@@ -208,7 +209,9 @@ def _csv_row(row: ListingRow) -> list[str]:
     values["台帳ID"] = row.category_code
     values["管理対象ID"] = row.kanri_taishou_id
     values["名称"] = row.name
-    values["都道府県"] = row.area
+    # 地域の列は見出しが分類で変わるので位置で指す (#74)。回収 CSV は既定の
+    # 見出しで書き出すが、意味は「その分類の地域欄」で、都道府県とは限らない。
+    values[EXPECTED_CSV_HEADER[AREA_COLUMN_INDEX]] = row.area
     values["緯度"] = row.latitude
     values["経度"] = row.longitude
     return [values[column] for column in EXPECTED_CSV_HEADER]
