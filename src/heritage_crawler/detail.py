@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Final
 
 from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, detail_key
-from heritage_crawler.catalog import SEARCH_AREAS, Area, Category, detail_url
+from heritage_crawler.catalog import Area, Category, detail_url
 from heritage_crawler.http import Fetcher, FetchError
 from heritage_crawler.ledger import read_ledger_rows
 
@@ -203,7 +203,7 @@ class Target:
 def read_targets(
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
 ) -> list[Target]:
     """キャッシュ済みの台帳 CSV から取得対象を作る。
 

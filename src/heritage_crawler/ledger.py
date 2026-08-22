@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Final
 
 from heritage_crawler.cache import LedgerCache, LedgerEntry, entry_key
-from heritage_crawler.catalog import BASE_URL, SEARCH_AREAS, Area, Category
+from heritage_crawler.catalog import BASE_URL, Area, Category, areas_for
 from heritage_crawler.http import Fetcher, FetchError, FormFields
 from heritage_crawler.search_page import (
     ParseError,
@@ -134,7 +134,7 @@ class LedgerRow:
 def read_ledger_rows(
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
 ) -> Iterator[LedgerRow]:
     """キャッシュ済みの台帳 CSV を分類 × 地域の順に読み、最後に回収ぶんを読む。
 
@@ -146,7 +146,7 @@ def read_ledger_rows(
     組み立て直したもの。地域別と同じ 18 列なので、読む側は区別しなくてよい。
     """
     for category in categories:
-        paths = [cache.csv_path(category, area) for area in areas]
+        paths = [cache.csv_path(category, area) for area in areas_for(category, areas)]
         paths.append(cache.recovered_csv_path(category))
         for path in paths:
             if not path.exists():
@@ -410,7 +410,7 @@ def fetch_ledgers(
     fetcher: Fetcher,
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
     *,
     force: bool = False,
     now: Callable[[], datetime] = _utc_now,
@@ -441,7 +441,7 @@ def fetch_ledgers(
         if run.abort_reason:
             return run
 
-        for area in areas:
+        for area in areas_for(category, areas):
             if not force and cache.is_done(category, area):
                 logger.debug("取得済みのため飛ばす: %s", entry_key(category, area))
                 continue
@@ -562,7 +562,7 @@ class CategorySummary:
 def summarize(
     cache: LedgerCache,
     categories: Sequence[Category],
-    areas: Sequence[Area] = SEARCH_AREAS,
+    areas: Sequence[Area] | None = None,
 ) -> list[CategorySummary]:
     """マニフェストの件数に加え、CSV の中身を読んでキーの異なり数も数える。
 
@@ -571,9 +571,10 @@ def summarize(
     """
     summaries = []
     for category in categories:
+        wanted = areas_for(category, areas)
         entries = [
             entry
-            for area in areas
+            for area in wanted
             if (entry := cache.entries.get(entry_key(category, area))) is not None
         ]
         keys = {row.key for row in read_ledger_rows(cache, [category], areas)}
@@ -581,7 +582,7 @@ def summarize(
             CategorySummary(
                 category=category,
                 fetched_areas=len(entries),
-                total_areas=len(areas),
+                total_areas=len(wanted),
                 area_hit_count=sum(entry.hit_count for entry in entries),
                 whole_count=cache.whole_counts.get(category.code),
                 row_count=sum(entry.row_count for entry in entries),

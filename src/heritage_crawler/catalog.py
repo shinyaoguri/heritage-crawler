@@ -8,14 +8,42 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Final
 
 BASE_URL: Final = "https://kunishitei.bunka.go.jp"
 
 
+class AreaScope(Enum):
+    """その分類を検索するとき、``seat_pref`` に何を送れるか (2026-08-23 実測)。
+
+    分割軸は分類ごとに違う。都道府県で引ける分類ばかりではない — 無形文化財は
+    地域の 9 区分しか持たず、選定保存技術には地域欄そのものが無い。
+    """
+
+    PREFECTURE = "prefecture"
+    """47 都道府県 + ``２県以上`` + ``地域を定めない``。
+
+    101 / 102 / 103 / 201 / 211 / 202 / 301 / 311 / 401 / 411 / 412 / 901。
+    未正規化の値 (``IRREGULAR_AREAS``) もここに含める。
+    """
+
+    PREFECTURE_AND_REGION = "prefecture-and-region"
+    """都道府県に加えて地域の 9 区分も option にある。302 / 322 / 312 / 323。"""
+
+    REGION = "region"
+    """地域の 9 区分だけ。**都道府県では引けない。** 303 / 313。"""
+
+    WHOLE = "whole"
+    """地域欄が無い。全国を 1 回で取る。304 (選定保存技術)。"""
+
+
 @dataclass(frozen=True)
 class Category:
-    """文化財分類。code は検索フォームの register_sub_id かつ CSV の台帳ID。"""
+    """文化財分類。code は検索フォームの register_sub_id。
+
+    **CSV の台帳ID とは限らない。** 台帳ID には複数の分類が同居する (#74)。
+    """
 
     code: str
     name: str
@@ -34,6 +62,9 @@ class Category:
     102 だけは 1 指定あたり約 2.5 棟に展開され、単位が違うので比べられない。
     """
 
+    area_scope: AreaScope = AreaScope.PREFECTURE
+    """検索の分割軸 (``search_areas`` が実際の地域に開く)。"""
+
 
 # 取得対象の分類。世界遺産 (901) は建造物・記念物と別軸の指定のため含めない。
 # 名前は指定行為の呼び方に合わせた (record.DESIGNATION_KINDS と同じ 登録 / 指定 / 選定)。
@@ -50,8 +81,9 @@ CATEGORIES_BY_CODE: Final[dict[str, Category]] = {
 }
 """分類コードから分類を引く。
 
-**台帳ID は分類コードと同じ値**なので、出力レコードの ``ledger_id`` から分類を
-戻せる。差分更新で、台帳から消えた行がどの分類のものかを知るのに使う (ADR 0018)。
+**台帳ID からは引けない。** 台帳ID には複数の分類が同居するので (#74)、
+出力レコードから分類を戻すときは ``record.category_of`` を通す (ADR 0024)。
+台帳キャッシュの置き場 (``<分類コード>/<地域>.csv``) からは引ける。
 """
 
 
@@ -231,6 +263,77 @@ IRREGULAR_AREAS: Final[tuple[Area, ...]] = (
 )
 
 SEARCH_AREAS: Final[tuple[Area, ...]] = SELECTABLE_AREAS + IRREGULAR_AREAS
+"""``AreaScope.PREFECTURE`` の分割軸。既定の分類はこれで引く。"""
+
+# 無形文化財・無形民俗文化財の select にだけ現れる 9 区分 (2026-08-23 実測)。
+# 都道府県ではないので 80 番台を割り当てた。303 / 313 はこれしか持たない。
+REGIONS: Final[tuple[Area, ...]] = (
+    Area("80", "全国一円", "nationwide"),
+    Area("81", "東北", "tohoku"),
+    Area("82", "関東", "kanto"),
+    Area("83", "北陸", "hokuriku"),
+    Area("84", "東海", "tokai"),
+    Area("85", "近畿", "kinki"),
+    Area("86", "中国", "chugoku"),
+    Area("87", "四国", "shikoku"),
+    Area("88", "九州", "kyushu"),
+)
+
+WHOLE_AREA: Final = Area("00", "", "whole")
+"""地域で絞らない 1 回ぶん。``seat_pref`` に空を送ると全国が返る。
+
+選定保存技術 (304) は検索フォームに地域欄そのものが無く、CSV にも地域の列が
+無い (2026-08-23 実測。全 82 件)。分けようがないので 1 回で取る。
+"""
+
+_AREAS_BY_SCOPE: Final[dict[AreaScope, tuple[Area, ...]]] = {
+    AreaScope.PREFECTURE: SEARCH_AREAS,
+    AreaScope.PREFECTURE_AND_REGION: SEARCH_AREAS + REGIONS,
+    AreaScope.REGION: REGIONS,
+    AreaScope.WHOLE: (WHOLE_AREA,),
+}
+
+
+def search_areas(category: Category) -> tuple[Area, ...]:
+    """その分類を取るときの分割軸 (2026-08-23 実測)。
+
+    **分類によって引ける単位が違う。** 都道府県で引けない分類があり、
+    地域欄そのものが無い分類もある。全分類に同じ 51 地域を投げると、
+    引けない分類では 0 件の検索を 51 回繰り返すことになる。
+
+    >>> len(search_areas(REGISTERED))
+    51
+    >>> [area.name for area in search_areas(Category("304", "選定保存技術", 82,
+    ...     area_scope=AreaScope.WHOLE))]
+    ['']
+    """
+    return _AREAS_BY_SCOPE[category.area_scope]
+
+
+def areas_for(category: Category, areas: Sequence[Area] | None) -> Sequence[Area]:
+    """明示された地域があればそれ、無ければその分類の分割軸。
+
+    取得も報告も出力も「分類 × 地域」で回るので、**地域は分類ごとに決まる**
+    必要がある。呼び手が ``--area`` で絞ったときだけ、そちらを優先する。
+
+    >>> len(areas_for(REGISTERED, None))
+    51
+    >>> [area.name for area in areas_for(REGISTERED, [PREFECTURES[12]])]
+    ['東京都']
+    """
+    return search_areas(category) if areas is None else areas
+
+
+def all_search_areas(categories: Sequence[Category]) -> tuple[Area, ...]:
+    """引き渡す分類が使う地域をまとめたもの。定義順で重複を落とす。
+
+    CLI の ``--area`` の選択肢や、複数分類をまとめて扱う場面で使う。
+    """
+    found: dict[str, Area] = {}
+    for category in categories:
+        for area in search_areas(category):
+            found.setdefault(area.code, area)
+    return tuple(found.values())
 
 
 def detail_url(category_code: str, kanri_taishou_id: str) -> str:
