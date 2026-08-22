@@ -10,9 +10,10 @@ name: 週次の差分更新
 # 件数で当たりを付ける案は捨てた — **増加と減少が同じ週に重なると数字が動かず、
 # 見逃す**。台帳を取り直すこと自体が正確さの担保になっている。
 #
-# **データが変わらない週はコミットが立たない** (ADR 0020)。利用日は「そのデータを
-# 取り出した日」なので、取り出し直していない種別では動かない。確かめ続けている
-# ことはサイトの「最終確認」が示す (下で heritages へ渡す)。
+# **データが変わらない週も、確認日だけは各データリポジトリに残す** (ADR 0023)。
+# 利用日 (`meta.json`) は「そのデータを取り出した日」なので取り出し直していない種別
+# では動かず、動かないままだと**静かなのか止まっているのかが外から見えない**。
+# 中身が動かなかったリポジトリには `status.json` だけのコミットが 1 つ立つ。
 #
 # 必要な secret は 2 つ。code4heritage org の GitHub App で、**対象 10 リポジトリに
 # contents:write**、**heritages に actions:write と Variables の書き込み**を与える。
@@ -193,9 +194,12 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run }}
           SLOT: ${{ inputs.slot }}
           FOUND: ${{ steps.previous.outputs.found }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          args=(--output-dir "$DATA_DIR")
+          # --run-url は status.json に残る (ADR 0023)。確認日が古いまま止まって
+          # いるとき、どの実行まで届いていたかをデータリポジトリ側から辿れる。
+          args=(--output-dir "$DATA_DIR" --run-url "$RUN_URL")
           if [ "${DRY_RUN:-false}" = "true" ]; then args+=(--dry-run); fi
           if [ -n "${SLOT:-}" ]; then args+=(--slot "$SLOT"); fi
           if [ "${FOUND:-}" = "true" ]; then
@@ -221,9 +225,9 @@ jobs:
           permission-contents: write
 
       # 生成物は決定的なので、データが変わっていなければ JSON Lines は 1 バイトも
-      # 動かない (ADR 0014)。**利用日も動かない** (ADR 0020) ので、確認しただけの週は
-      # どのリポジトリにもコミットが立たない。
-      - name: 変わったリポジトリだけ commit して push
+      # 動かない (ADR 0014)。**利用日も動かない** (ADR 0020)。動くのは `status.json` の
+      # 確認日だけで、その週は「確認 (差分なし)」のコミットが 1 つ立つ (ADR 0023)。
+      - name: 確認日と、変わったぶんを commit して push
         id: push
         if: inputs.dry-run != true
         env:
@@ -233,33 +237,45 @@ jobs:
         run: |
           set -euo pipefail
           changed=0
+          checked=0
+          # 日付は日本時間で切る — 巡回の枠を決めるのも確認日も日本時間 (ADR 0020 / ADR 0023)
+          today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
           {
             echo '## push'
             while read -r repo; do
               cd "${GITHUB_WORKSPACE}/${DATA_DIR}/${repo}"
               git add -A
               if git diff --cached --quiet; then
-                echo "- ${repo}: 差分なし"
+                # status.json すら動いていない = update-records がこのリポジトリに
+                # 触れていない (分類や地域を絞った実行)。確かめた証跡が無いので押さない。
+                echo "- ${repo}: 差分なし (このリポジトリは対象外)"
                 continue
               fi
-              summary=$(git diff --cached --shortstat)
-              # 日付は日本時間で切る — 巡回の枠を決めるのも日本時間の週 (ADR 0020)
-              today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+              # **中身が動いたかは data / meta.json / removed.jsonl で見る。**
+              # status.json は毎週動くので、そのまま数えると全部が「更新」に見える。
+              if git diff --cached --quiet -- data meta.json removed.jsonl; then
+                message="chore(data): ${today} に確認 (差分なし)"
+                note="- ${repo}: 確認のみ"
+                checked=$((checked + 1))
+              else
+                message="chore(data): ${today} の差分を反映"
+                note="- ${repo}: $(git diff --cached --shortstat)"
+                changed=$((changed + 1))
+              fi
               # clone のときに埋め込んだトークンは期限切れになりうる。取り直した
               # ものへ張り替えてから押す。
               git remote set-url origin \
                 "https://x-access-token:${GH_TOKEN}@github.com/code4heritage/${repo}.git"
               git -c "user.name=${BOT}" \
                   -c "user.email=${BOT}@users.noreply.github.com" \
-                  commit --quiet -m "chore(data): ${today} の差分を反映" \
+                  commit --quiet -m "${message}" \
                                  -m "出典: 国指定文化財等データベース (文化庁)" \
                                  -m "実行: ${RUN_URL}"
               git push --quiet
-              echo "- ${repo}: ${summary}"
-              changed=$((changed + 1))
+              echo "${note}"
             done <"${GITHUB_WORKSPACE}/repos.txt"
             echo
-            echo "更新したリポジトリ: ${changed}"
+            echo "中身が変わったリポジトリ: ${changed} / 確認のみ: ${checked}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           echo "changed=${changed}" >>"$GITHUB_OUTPUT"
 
@@ -293,9 +309,9 @@ jobs:
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # **確認した日を heritages へ渡す。** 利用日はデータを取り出した日なので、
-      # 変わらない週は動かない。確かめ続けていることはサイトの「最終確認」でしか
-      # 示せない。変数に残すのは、サイトのコードを直しただけの回にも表示を保つため。
+      # **確認した日を heritages へも渡す。** データリポジトリの `status.json` と
+      # 同じ日付で (ADR 0023)、こちらはサイトの「最終確認」になる。変数に残すのは、
+      # サイトのコードを直しただけの回にも表示を保つため。
       # **サイト側へは別のトークンを使う。** データリポジトリへ押すトークンに
       # `actions: write` を乗せない — App が持つ権限をそのまま配らず、行き先と
       # 用途で絞る。ここでも取り直すので期限切れの心配も無い。

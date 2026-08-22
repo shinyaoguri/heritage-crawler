@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from heritage_crawler.cli import build_parser, main
 from heritage_crawler.detail import Presence
 from heritage_crawler.ledger import LedgerRun
 from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
+from heritage_crawler.status import STATUS_FILENAME, checked_today
 from heritage_crawler.update import ROTATION_SLOTS, rotation_slot
 
 PRESERVATION_DISTRICTS = "important-preservation-districts-for-groups-of-traditional-buildings"
@@ -236,8 +238,37 @@ def test_差分更新のドライランは何も書き換えない(
 
     assert status == 0
     assert {path: path.read_bytes() for path in sorted(out.rglob("*")) if path.is_file()} == before
+    # 確認日も書かない — 見にいっていないのに「確かめた」と残すのが一番たちが悪い
+    assert not (out / PRESERVATION_DISTRICTS / STATUS_FILENAME).exists()
     printed = capsys.readouterr().out
     assert "前回の出力 1 件 / 巡回の枠 1/52" in printed
+
+
+def test_確認日は既定で日本時間の今日になる(cache_dir: Path, tmp_path: Path) -> None:
+    """週次は日本時間の未明に走る。UTC で切ると前日の日付が残る (ADR 0023)。"""
+    put_ledger(LedgerCache(cache_dir), SELECTED, area_named("京都府"), ["16"])
+    put_detail(DetailCache(cache_dir), SELECTED, "16", fixture("detail_103.html"))
+    out = tmp_path / "data"
+    assert main(["--cache-dir", str(cache_dir), "build-records", "--output-dir", str(out)]) == 0
+
+    status = main(
+        ["--cache-dir", str(cache_dir), "update-records", "--output-dir", str(out), "--slot", "1"]
+    )
+
+    assert status == 0
+    payload = json.loads(
+        (out / PRESERVATION_DISTRICTS / STATUS_FILENAME).read_text(encoding="utf-8")
+    )
+    assert payload["checked_date"] == checked_today(datetime.now(UTC))
+    assert payload["repo"] == PRESERVATION_DISTRICTS
+
+
+def test_確認日は日付として読めないと受け取らない(capsys: pytest.CaptureFixture[str]) -> None:
+    """読めない値は 10 リポジトリに残り、次の週まで直せない。"""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["update-records", "--checked-date", "2026/08/24"])
+
+    assert "日付は YYYY-MM-DD で書く" in capsys.readouterr().err
 
 
 def test_前回の台帳を渡すと値の変化を見つける(

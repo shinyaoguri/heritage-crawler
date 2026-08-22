@@ -66,7 +66,7 @@ flowchart TD
 
     DB -.->|"読む"| L
     DB -.->|"読む"| F
-    B -->|"変わったリポジトリだけ push"| J
+    B -->|"確認日と、変わったぶんを push"| J
     B -->|"確認日を渡して起こす"| C
     J -->|"clone"| C
     P --> PG
@@ -83,7 +83,7 @@ flowchart TD
 | | crawler | **1 段目**。分類 × 51 地域の CSV を取り直す (204 リクエスト)。1 地域取れなくても止めず、残りは `retry.sh` の次の回が試す ([ADR 0022](decisions/0022-keep-fetching-the-ledger-when-one-area-fails.md)) |
 | | crawler | 前回の台帳と**バイト単位**で比べ、違ったファイルの行だけキーで突き合わせる。CSV が動いた週だけ `audit-listing --recover` を挟む |
 | | crawler | **2 段目**。新規・値が変わったぶん・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
-| | crawler | 行を組み立て、**変わったリポジトリだけ** commit して push |
+| | crawler | 行を組み立て、**確認日 (`status.json`) と変わったぶん**を commit して push ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。中身が動かなかったリポジトリは「確認 (差分なし)」のコミットが 1 つ立つ |
 | | crawler | heritages に確認日を渡し (`LAST_CHECKED_DATE`)、`deliver.yml` を起こす |
 | 月 03:20 頃 | heritages | 起こされて `deliver.yml` が走る。10 リポジトリを clone し、**配ってよいデータか確かめる**。通ったら配信と配布へ |
 | | heritages | サイトを組み立てて Pages へ。前回の配布物と比べて変更履歴を書き、**行が動いた回だけ**リリースを立てる |
@@ -99,6 +99,7 @@ flowchart TD
 | データリポジトリの `data/*.jsonl` | crawler | 都道府県ごとの行 | 行が動いた週 |
 | データリポジトリの `meta.json` | crawler | 出典・**利用日**・表示名・語彙・件数 ([ADR 0014](decisions/0014-machine-readable-dataset-metadata.md)) | 同上 |
 | データリポジトリの `removed.jsonl` | crawler | いま消えている指定 (状態型。復活すれば行が消える) | 落とした週 |
+| データリポジトリの `status.json` | crawler | **確認日**・利用日・その週に行が動いたか・件数・実行の URL ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md)) | **毎週** |
 | データリポジトリのリリース | **heritages** | 種別ごとの ZIP + 変更履歴 ([ADR 0019](decisions/0019-distribute-archives-through-releases.md)) | 行が動いた回 |
 | heritages のリリース | heritages | 全部入り ZIP + `MANIFEST.json` | 同上 |
 | heritages の Pages | heritages | 閲覧サイト | 走るたび |
@@ -109,8 +110,10 @@ flowchart TD
 
 - **利用日** (`meta.json` の `accessed_date`) … そのデータを**取り出した**日。
   上流が変わらなければ古いままで、それが正常
-- **確認日** (`LAST_CHECKED_DATE`) … データベースを**見にいった**最後の日。
-  クローラーしか知らないので、毎週渡している
+- **確認日** (`status.json` の `checked_date`、および `LAST_CHECKED_DATE`) …
+  データベースを**見にいった**最後の日。クローラーしか知らないので、毎週書いて渡す。
+  **同じ日付が 2 か所に出る** — データリポジトリを単独で受け取った人はサイトを
+  見ないため ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))
 
 ## どこで何を確かめるか
 
@@ -130,7 +133,7 @@ flowchart TD
 
 | 何を | 通らないと |
 |---|---|
-| 台帳を取り切れたか | 終了コード 1 で `retry.sh` が繰り返す。それでも駄目なら**押さずに終わる** (データリポジトリは前回のまま) |
+| 台帳を取り切れたか | 終了コード 1 で `retry.sh` が繰り返す。それでも駄目なら**押さずに終わる** (データリポジトリは前回のまま)。確認日も進まないので、**止まっていることがデータリポジトリ側から見える** ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md)) |
 | README の件数表がデータとずれていないか | **ジョブは失敗させず** Issue に残す (データの push は成功しているため)。`data` は追跡外なので、この検査はここでしかできない |
 | ジョブ全体 | 失敗したら Issue が立つ (同じ Issue が open なら追記) |
 
@@ -164,14 +167,18 @@ Pages は最後に成功したデプロイを配り続けるので、壊れた�
 
 ## データが変わらない週に起きること
 
-**どこにもコミットが立たない**
-([ADR 0020](decisions/0020-check-weekly-by-diffing-the-ledger-csv.md))。
+**動くのは確認日だけ**
+([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。
 
 生成物が決定的なので、行が動かなければ `meta.json` も 1 バイトも変わらない。利用日は
 「取り出した日」なので据え置かれ、heritages 側も変更履歴が空になってリリースを作らない。
 
-**確かめ続けていることはサイトの「最終確認」が示す。**クローラーが毎週渡す確認日が
-Pages に出るので、静かなことと止まっていることを外から区別できる。
+各データリポジトリには `status.json` だけが動いた**「◯◯ に確認 (差分なし)」の
+コミットが 1 つ**立つ。中身の変化だけを追うなら
+`git log -- data meta.json removed.jsonl` で絞れる。
+
+**確かめ続けていることは 2 か所が示す。**データリポジトリの確認日と、サイトの
+「最終確認」。どちらか一方でも古ければ、静かなのではなく取得できていない。
 
 ## 手で回す道
 

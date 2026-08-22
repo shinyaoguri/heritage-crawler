@@ -4,6 +4,9 @@
 
 承認済み (2026-08-15)。[0018](0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md) を置換する。
 
+**「確認日をデータリポジトリには書かない」だけ [0023](0023-stamp-every-check-into-the-data-repositories.md)
+が改めた** (2026-08-22)。利用日の据え置きを含め、ほかはそのまま生きている。
+
 ## 文脈
 
 [0018](0018-detect-monthly-changes-with-the-ledger-and-a-rotation.md) で月次の差分
@@ -66,7 +69,9 @@
   1 バイトも変わらず、**確認しただけの週はどこにもコミットが立たない**
 - **確かめ続けていることはサイトが示す。** クローラーが確認日を
   `code4heritage/heritages` へ渡し、画面に「最終確認」として出す。データリポジトリ
-  には書かない (書けば結局コミットが立つ)
+  には書かない (書けば結局コミットが立つ) —
+  **ここは [0023](0023-stamp-every-check-into-the-data-repositories.md) が改めた。**
+  リポジトリを単独で受け取った人がサイトを見ないため、`status.json` を毎週書く
 - **クローラーから heritages を起こす** (`workflow_dispatch`)。
   [0015](0015-single-cross-type-site-on-pages.md) が dispatch を却下したのは
   「個人アカウントから org へ dispatch するトークンを増やしたくない」ためだったが、
@@ -84,7 +89,10 @@
 - **データリポジトリのコミットは実際に変わった回だけ**になる。年 120 の定期
   コミットが消え、履歴が「いつ何が変わったか」だけになる
 - 「毎月確認した証跡」がデータリポジトリから消える。代わりに Actions の実行履歴
-  (90 日)・サイトの「最終確認」・リリース履歴が担う
+  (90 日)・サイトの「最終確認」・リリース履歴が担う —
+  **この判断は [0023](0023-stamp-every-check-into-the-data-repositories.md) が覆した。**
+  証跡は `status.json` としてデータリポジトリに戻り、中身が動いた回とはコミット
+  メッセージで区別する
 - **`LEDGER_FIELDS` / `CATEGORY_FIELDS` / `Compare` が不要になる。** 近似が消えて
   実装が減り、「どの列なら比べてよいか」を実測し直す保守も要らなくなる
 - artifact が失効するのは 90 日以上実行が止まったときだけ。そのとき台帳の値の変化は

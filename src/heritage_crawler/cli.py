@@ -42,7 +42,7 @@ from heritage_crawler.detail import (
     recheck_cache,
     summarize_details,
 )
-from heritage_crawler.export import DEFAULT_OUTPUT_DIR, build_dataset, format_report
+from heritage_crawler.export import DEFAULT_OUTPUT_DIR, Checked, build_dataset, format_report
 from heritage_crawler.http import (
     DEFAULT_CONTACT,
     DEFAULT_INTERVAL,
@@ -70,6 +70,7 @@ from heritage_crawler.listing import (
 from heritage_crawler.metadata import JST
 from heritage_crawler.readme import ReadmeError, read_counts, render_block, replace_block
 from heritage_crawler.search_page import ParseError
+from heritage_crawler.status import checked_today
 from heritage_crawler.update import (
     ROTATION_SLOTS,
     LedgerDiff,
@@ -285,6 +286,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="計画だけを出す (相手先へは一切アクセスせず、出力も書き換えない)",
     )
+    update.add_argument(
+        "--checked-date",
+        type=_date,
+        # **既定は None。** 空文字にすると argparse が既定値にも type を通し、
+        # 何も渡していないのに「日付として読めない」で落ちる。
+        default=None,
+        help="確認日 (YYYY-MM-DD。既定: 日本時間の今日)。データが変わらなくても "
+        "各データリポジトリの status.json に残す (ADR 0023)",
+    )
+    update.add_argument(
+        "--run-url",
+        default="",
+        help="この実行への URL。status.json に残して、あとから追えるようにする",
+    )
 
     render = subparsers.add_parser(
         "render-readme",
@@ -301,6 +316,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="書き換えず、ずれていれば異常終了する (あるべき表を出力する)",
     )
     return parser
+
+
+def _date(value: str) -> str:
+    """``YYYY-MM-DD`` として読めることだけ確かめる。
+
+    確認日は残り続ける記録なので、読めない値を書いてから気付くと直しにくい
+    (次の週に上書きされるまで、データリポジトリ 10 個に残る)。
+    """
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"日付は YYYY-MM-DD で書く: {value!r}") from error
 
 
 def _slot(value: str) -> int:
@@ -608,6 +635,9 @@ def _run_update(
         areas,
         args.output_dir,
         reuse=reuse_for(plan, existing, now.isoformat(timespec="seconds")),
+        # **取り直すものが無かった回にも書く** (ADR 0023)。ここまで来ていれば台帳は
+        # 取り直せている = データベースを見にいけている。
+        checked=Checked(date=args.checked_date or checked_today(now), run_url=args.run_url),
     )
     print(format_report(report))
     return 0

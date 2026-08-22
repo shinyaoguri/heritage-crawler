@@ -83,7 +83,7 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 
 ## 現状
 
-要件議論の主要な決定は ADR 0001〜0022 に記録済み。実装は 2 段構えの取得層
+要件議論の主要な決定は ADR 0001〜0023 に記録済み。実装は 2 段構えの取得層
 (台帳・詳細) と解析・出力層まで入っており、ADR 0021 (削除された指定の記録) も
 記録の器と実在の確認まで入っている (#60 / #61)。
 
@@ -104,6 +104,7 @@ heritage-crawler 固有の文脈。全プロジェクト共通の規約はグロ
 | `src/heritage_crawler/export.py` | キャッシュを走査して種別リポジトリごと・都道府県ごとの JSON Lines を書く (差分更新では前回の出力も使う) |
 | `src/heritage_crawler/update.py` | 前回の出力・前回の台帳と突き合わせ、取り直す対象を決める (週次) |
 | `src/heritage_crawler/metadata.py` | データリポジトリの `meta.json` (出典・利用日・表示名・語彙・件数) |
+| `src/heritage_crawler/status.py` | データリポジトリの `status.json` (確認日。週次だけが書く) |
 | `src/heritage_crawler/cache.py` | CSV と生 HTML の置き場とマニフェスト (再開の判断) |
 | `src/heritage_crawler/readme.py` | README の件数表を書き出したデータから組み立てる |
 | `src/heritage_crawler/cli.py` | `fetch-ledger` / `report-ledger` / `compare-ledgers` / `audit-listing` / `fetch-detail` / `report-detail` / `build-records` / `update-records` / `render-readme` |
@@ -159,10 +160,14 @@ push 用の GitHub App の secret まで入っている。**push まで含む本
   弾かれ、サイトも通常のレコードとして読もうとする)。**状態型**なので並ぶのは
   「いま消えているもの」だけで、復活すれば行は消える。**`build-records` (全件の
   組み立て直し) は触らない** — キャッシュからは履歴を再現できず、書けば消える
-- **データが変わらない週はどこにもコミットが立たない** (ADR 0020)。利用日は「その
-  データを取り出した日」なので、行が動かなかった種別では据え置かれ、`meta.json` も
-  1 バイトも変わらない。確かめ続けていることは**サイトの「最終確認」**が示す
-  (週次の最後に heritages を起こして確認日を渡す)
+- **データが変わらない週も、確認日だけは各データリポジトリに残す** (ADR 0023)。
+  利用日は「そのデータを取り出した日」なので行が動かなかった種別では据え置かれ、
+  `meta.json` も 1 バイトも変わらない。動くのはルートの `status.json` の**確認日**
+  (データベースを見にいった日) だけで、その週は「◯◯ に確認 (差分なし)」のコミットが
+  1 つ立つ。**書くのは `update-records` だけ** — `build-records` に日付を持ち込むと
+  全件の組み立て直しが実行日で揺れる。中身の変化だけを追うときは
+  `git log -- data meta.json removed.jsonl`。サイトの「最終確認」にも同じ日付を渡す
+  (週次の最後に heritages を起こす)
 
 **データ閲覧サイトは `code4heritage/heritages` に 1 つだけ置く** (ADR 0015)。
 種別ごとに複製しない — 分けるのはデータであってコードではない (ADR 0001) うえ、
