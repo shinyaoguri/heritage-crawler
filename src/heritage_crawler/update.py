@@ -385,7 +385,7 @@ def plan_update(
             continue
         seen.add(row.key)
         target = Target(
-            daichou_id=row.get("台帳ID"),
+            category_code=row.category.code,
             kanri_taishou_id=row.get("管理対象ID"),
             name=" ".join(part for part in (row.get("名称"), row.get("棟名")) if part),
         )
@@ -438,6 +438,9 @@ def candidates(plan: UpdatePlan, existing: Existing) -> list[Target]:
     for key in sorted(set(plan.removed) | set(plan.retained)):
         record = existing.records.get(key, {})
         ledger_id, _, managed_id = key.partition("/")
+        # 出力レコードのキーは台帳ID ベースだが、詳細ページは分類コードで引く (#74)。
+        # 現行 4 分類は同値なのでこれで届く。分類が増える前に、レコード自身に
+        # 分類コードを持たせて置き換える。
         found.append(Target(ledger_id, managed_id, str(record.get("name", ""))))
     return found
 

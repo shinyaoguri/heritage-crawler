@@ -203,7 +203,9 @@ def recover_missing(cache: LedgerCache, audit: ListingAudit) -> int:
 def _csv_row(row: ListingRow) -> list[str]:
     """一覧の行を台帳 CSV の 18 列に写す。埋められない列は空のまま。"""
     values = dict.fromkeys(EXPECTED_CSV_HEADER, "")
-    values["台帳ID"] = row.daichou_id
+    # 一覧が持つのは分類コードで、台帳ID ではない (#74)。現行 4 分類では同値なので
+    # このまま書ける。台帳ID が食い違う分類を足すときは、分類側から台帳ID を採る。
+    values["台帳ID"] = row.category_code
     values["管理対象ID"] = row.kanri_taishou_id
     values["名称"] = row.name
     values["都道府県"] = row.area

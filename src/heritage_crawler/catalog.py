@@ -233,8 +233,14 @@ IRREGULAR_AREAS: Final[tuple[Area, ...]] = (
 SEARCH_AREAS: Final[tuple[Area, ...]] = SELECTABLE_AREAS + IRREGULAR_AREAS
 
 
-def detail_url(daichou_id: str, kanri_taishou_id: str) -> str:
-    """CSV の 2 列から詳細ページの URL を組み立てる。
+def detail_url(category_code: str, kanri_taishou_id: str) -> str:
+    """詳細ページの URL を組み立てる。
+
+    **第 1 セグメントは分類コードで、CSV の台帳ID ではない** (2026-08-23 実測)。
+    現行 4 分類は台帳ID と分類コードが同値なので取り違えても表に出ないが、
+    登録記念物 (411) の台帳ID は 401 で、401 で組むと「必要な情報が足りません」の
+    エラーページが返る。台帳ID が分類コードと食い違うのは 211 / 311 / 322 /
+    312 / 323 / 313 / 411 / 412 の 8 分類。
 
     ID は必ず文字列のまま扱うこと。管理対象ID には短い連番形式 (``23``) と
     8 桁ゼロ詰め形式 (``00003904``) が混在し、数値に変換するとゼロ詰めが落ちて
@@ -244,7 +250,9 @@ def detail_url(daichou_id: str, kanri_taishou_id: str) -> str:
     'https://kunishitei.bunka.go.jp/heritage/detail/102/23'
     >>> detail_url("102", "00003904")
     'https://kunishitei.bunka.go.jp/heritage/detail/102/00003904'
+    >>> detail_url("411", "00003483")  # 台帳ID は 401
+    'https://kunishitei.bunka.go.jp/heritage/detail/411/00003483'
     """
-    if not daichou_id or not kanri_taishou_id:
-        raise ValueError("台帳ID と 管理対象ID は必須")
-    return f"{BASE_URL}/heritage/detail/{daichou_id}/{kanri_taishou_id}"
+    if not category_code or not kanri_taishou_id:
+        raise ValueError("分類コードと 管理対象ID は必須")
+    return f"{BASE_URL}/heritage/detail/{category_code}/{kanri_taishou_id}"

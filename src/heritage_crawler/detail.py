@@ -5,7 +5,7 @@
 2 万ページを取り直すことになる (ADR 0006)。
 
 台帳と違い、詳細ページはセッションも CSRF も要らない静的な GET なので、
-取得の単位は ``(台帳ID, 管理対象ID)`` だけで完結する。
+取得の単位は ``(分類コード, 管理対象ID)`` だけで完結する。
 """
 
 from __future__ import annotations
@@ -179,18 +179,25 @@ class Target:
     (``00003904``) が混在し、数値に変換するとゼロ詰めが落ちて到達できなくなる。
     """
 
-    daichou_id: str
+    category_code: str
+    """**CSV の台帳ID ではなく分類コード。**
+
+    詳細ページ URL の第 1 セグメントもキャッシュの置き場もこちらで決まる
+    (``catalog.detail_url``)。台帳ID は 1 つに複数の分類が同居するので
+    (401 に 401 / 411 / 412)、取りに行った先を表せない。
+    """
+
     kanri_taishou_id: str
     name: str
     """ログに出すためだけの表示名。取得には使わない。"""
 
     @property
     def key(self) -> str:
-        return detail_key(self.daichou_id, self.kanri_taishou_id)
+        return detail_key(self.category_code, self.kanri_taishou_id)
 
     @property
     def url(self) -> str:
-        return detail_url(self.daichou_id, self.kanri_taishou_id)
+        return detail_url(self.category_code, self.kanri_taishou_id)
 
 
 def read_targets(
@@ -200,16 +207,18 @@ def read_targets(
 ) -> list[Target]:
     """キャッシュ済みの台帳 CSV から取得対象を作る。
 
-    ``(台帳ID, 管理対象ID)`` で重複を落とす。複数の都道府県に現れる指定がある
+    ``(分類コード, 管理対象ID)`` で重複を落とす。複数の都道府県に現れる指定がある
     ため (102 の琵琶湖疏水施設が滋賀県と京都府の両方に出る)。棟レベルでキーが
     完全に重なるので、ここで落とせば詳細ページを二度取りに行かずに済む。
 
-    台帳ID は分類コードと同じ値だが、組み立てには CSV の値をそのまま使う。
+    **分類コードは CSV の台帳ID 列ではなく、その CSV を取りに行った分類から採る。**
+    台帳ID には複数の分類が同居しており (401 に 401 / 411 / 412)、そのままでは
+    詳細ページに到達できない (``catalog.detail_url``)。
     """
     targets: dict[str, Target] = {}
     for row in read_ledger_rows(cache, categories, areas):
         target = Target(
-            daichou_id=row.get("台帳ID"),
+            category_code=row.category.code,
             kanri_taishou_id=row.get("管理対象ID"),
             name=" ".join(part for part in (row.get("名称"), row.get("棟名")) if part),
         )
@@ -246,17 +255,17 @@ def recheck_cache(
     """
     found = []
     for target in targets:
-        if not cache.is_done(target.daichou_id, target.kanri_taishou_id):
+        if not cache.is_done(target.category_code, target.kanri_taishou_id):
             continue
         try:
-            reason = rejected(cache.read_html(target.daichou_id, target.kanri_taishou_id))
+            reason = rejected(cache.read_html(target.category_code, target.kanri_taishou_id))
         except OSError as error:
             reason = f"キャッシュを読めない: {error}"
         if not reason:
             continue
         cache.record(
             DetailEntry(
-                daichou_id=target.daichou_id,
+                category_code=target.category_code,
                 kanri_taishou_id=target.kanri_taishou_id,
                 ok=False,
                 byte_count=0,
@@ -295,7 +304,7 @@ def fetch_details(
     pending = [
         target
         for target in targets
-        if force or not cache.is_done(target.daichou_id, target.kanri_taishou_id)
+        if force or not cache.is_done(target.category_code, target.kanri_taishou_id)
     ]
     run = DetailRun(total=len(targets), skipped=len(targets) - len(pending))
     logger.info("取得対象 %d 件 (取得済みを飛ばして %d 件)", run.total, len(pending))
@@ -398,7 +407,7 @@ class _RunState:
     def _record(self, target: Target, *, ok: bool, html: bytes | None, error: str) -> None:
         self._cache.record(
             DetailEntry(
-                daichou_id=target.daichou_id,
+                category_code=target.category_code,
                 kanri_taishou_id=target.kanri_taishou_id,
                 ok=ok,
                 byte_count=len(html) if html is not None else 0,
@@ -473,7 +482,7 @@ def summarize_details(cache: DetailCache, targets: Sequence[Target]) -> DetailSu
         entry = cache.entries.get(target.key)
         if entry is None:
             continue
-        if entry.ok and cache.html_path(target.daichou_id, target.kanri_taishou_id).exists():
+        if entry.ok and cache.html_path(target.category_code, target.kanri_taishou_id).exists():
             fetched += 1
         else:
             failed += 1
@@ -491,7 +500,7 @@ def format_detail_summary(summary: DetailSummary, failures: Sequence[DetailEntry
     ]
     for entry in failures[:5]:
         lines.append(
-            f"  失敗: {detail_key(entry.daichou_id, entry.kanri_taishou_id)} {entry.error}"
+            f"  失敗: {detail_key(entry.category_code, entry.kanri_taishou_id)} {entry.error}"
         )
     if len(failures) > 5:
         lines.append(f"  ほか {len(failures) - 5:,} 件")

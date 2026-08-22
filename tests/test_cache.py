@@ -109,7 +109,7 @@ def test_知らない形式のマニフェストは黙って使わない(cache_d
 
 def detail_entry(**overrides: object) -> DetailEntry:
     values: dict[str, object] = {
-        "daichou_id": "102",
+        "category_code": "102",
         "kanri_taishou_id": "00003904",
         "ok": True,
         "byte_count": 47_000,
@@ -119,7 +119,7 @@ def detail_entry(**overrides: object) -> DetailEntry:
     return DetailEntry(**values)  # type: ignore[arg-type]
 
 
-def test_詳細の保存先は台帳ID_で分ける(cache_dir: Path) -> None:
+def test_詳細の保存先は分類コード_で分ける(cache_dir: Path) -> None:
     path = DetailCache(cache_dir).html_path("102", "00003904")
     assert path == cache_dir / "detail" / "102" / "00003904.html.gz"
 
@@ -164,7 +164,7 @@ def test_欠けた行は飛ばして残りを読む(cache_dir: Path) -> None:
     cache = DetailCache(cache_dir)
     cache.record(detail_entry(), b"<html></html>")
     with cache.manifest_path.open("a", encoding="utf-8") as manifest:
-        manifest.write('{"daichou_id": "102", "kanri_tai')
+        manifest.write('{"category_code": "102", "kanri_tai')
 
     assert list(DetailCache(cache_dir).entries) == ["102/00003904"]
 
@@ -175,3 +175,31 @@ def test_知らない形式の詳細マニフェストは黙って使わない(c
     cache.manifest_path.write_text(json.dumps({"version": 99}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="未対応"):
         _ = cache.entries
+
+
+def test_旧名で書かれたマニフェストも読める(cache_dir: Path) -> None:
+    """``daichou_id`` は分類コードの誤った呼び名だった (#74)。
+
+    現行 4 分類では値が同じなので、読み替えるだけで手元の 23,742 件を
+    取り直さずに済む。
+    """
+    cache = DetailCache(cache_dir)
+    cache.detail_dir.mkdir(parents=True)
+    cache.manifest_path.write_text(
+        json.dumps({"version": DETAIL_MANIFEST_VERSION})
+        + "\n"
+        + json.dumps(
+            {
+                "daichou_id": "102",
+                "kanri_taishou_id": "00003904",
+                "ok": True,
+                "byte_count": 47_000,
+                "fetched_at": "2026-08-12T10:00:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entries = DetailCache(cache_dir).entries
+    assert list(entries) == ["102/00003904"]
+    assert entries["102/00003904"].category_code == "102"
