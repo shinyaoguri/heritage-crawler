@@ -315,9 +315,15 @@ jobs:
       # **サイト側へは別のトークンを使う。** データリポジトリへ押すトークンに
       # `actions: write` を乗せない — App が持つ権限をそのまま配らず、行き先と
       # 用途で絞る。ここでも取り直すので期限切れの心配も無い。
+      #
+      # **ここから先で落ちてもジョブは失敗させない** (Issue には残す)。データの
+      # push は終わっており、配信と配布は heritages 側の保険 cron (毎週月曜
+      # 08:00 JST) が拾う。赤にすると**取得そのものが止まった週と見分けが付かなく
+      # なる** — README の件数表のドリフトと同じ扱いにしてある。
       - name: サイト用のトークンを発行
         id: site-token
         if: inputs.dry-run != true
+        continue-on-error: true
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ secrets.DATA_PUSH_CLIENT_ID }}
@@ -328,7 +334,9 @@ jobs:
           permission-variables: write # 確認日を残す
 
       - name: サイトと配布物を起こす
-        if: inputs.dry-run != true
+        id: site
+        if: inputs.dry-run != true && steps.site-token.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.site-token.outputs.token }}
         run: |
@@ -338,6 +346,40 @@ jobs:
           gh workflow run deliver.yml --repo code4heritage/heritages \
             --field "checked-date=${today}"
           echo "heritages を起こした (確認日 ${today})" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 押すところまでは終わっているので、**何が残っているか**を書く。
+      # 「失敗した」だけでは、翌週まで放っておいてよいのか手で起こすべきかが読めない。
+      - name: サイトを起こせなかったことを Issue に残す
+        if: |
+          inputs.dry-run != true
+          && (steps.site-token.outcome == 'failure' || steps.site.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          {
+            echo "週次の差分更新は**データの push まで終えた**が、"
+            echo "\`code4heritage/heritages\` を起こせなかった。"
+            echo
+            echo "- **データリポジトリは更新済み** (確認日 ${today})。行が消えることはない"
+            echo "- **サイトの「最終確認」は古いまま。** 配信と配布は heritages 側の"
+            echo "  保険 cron (毎週月曜 08:00 JST) が拾うが、そちらには確認日が渡らない"
+            echo
+            echo "手で起こすなら:"
+            echo
+            echo '```'
+            echo "gh variable set LAST_CHECKED_DATE --repo code4heritage/heritages --body ${today}"
+            echo "gh workflow run deliver.yml --repo code4heritage/heritages --field checked-date=${today}"
+            echo '```'
+            echo
+            echo "トークンの発行で落ちているなら、GitHub App の Permissions を見る"
+            echo "(heritages に \`actions: write\` と Variables の書き込みが要る)。"
+            echo
+            echo "実行: ${RUN_URL}"
+          } >site-body.md
+          ./scripts/report-issue.sh "heritages を起こせなかった" site-body.md
 
       # ずれても**ジョブは失敗させず** Issue に残す (データの push は成功している)。
       - name: 件数表のずれを Issue に残す
@@ -366,15 +408,7 @@ jobs:
             echo
             echo "実行: ${RUN_URL}"
           } >body.md
-
-          existing=$(gh issue list --state open --limit 100 --json number,title \
-            --jq "[.[] | select(.title == \"${title}\")] | .[0].number // empty")
-
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file body.md
-          else
-            gh issue create --title "$title" --body-file body.md
-          fi
+          ./scripts/report-issue.sh "$title" body.md
 
       # 週次は誰も見ていないところで走る。失敗を Issue に残さないと、
       # データが何週も止まっていることに気付けない (freshness.yml と同じ形)。
@@ -383,12 +417,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUSHED: ${{ steps.push.outcome }}
         run: |
           set -euo pipefail
           title="週次の差分更新が失敗した"
           {
             echo "週次の差分更新 (\`.github/workflows/weekly.yml\`) が失敗した。"
-            echo "データリポジトリは前回のままで、行が消えることはない。"
+            echo
+            # **押す前に落ちたのか、押したあとかで実態が違う。** 一律に「前回のまま」と
+            # 書くと、更新済みのデータを古いものと誤認する (2026-08-22 に実際に起きた)。
+            if [ "${PUSHED:-}" = "success" ]; then
+              echo "**データリポジトリへの push は終わっている。**確認日 (\`status.json\`) も"
+              echo "進んでいるので、落ちたのはそのあとの工程。データは前回のものではない。"
+            else
+              echo "**押す前に落ちたので、データリポジトリは前回のまま。**行が消えることはない。"
+            fi
             echo
             echo "実行: ${RUN_URL}"
             echo
@@ -401,12 +444,4 @@ jobs:
             echo "heritage-crawler update-records --dry-run"
             echo '```'
           } >body.md
-
-          existing=$(gh issue list --state open --limit 100 --json number,title \
-            --jq "[.[] | select(.title == \"${title}\")] | .[0].number // empty")
-
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file body.md
-          else
-            gh issue create --title "$title" --body-file body.md
-          fi
+          ./scripts/report-issue.sh "$title" body.md
