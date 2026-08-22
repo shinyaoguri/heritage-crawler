@@ -16,6 +16,7 @@ from heritage_crawler.record import (
     KEY_ORDER,
     BuildReport,
     build_record,
+    category_of,
     normalize_date,
     resolve_location,
     routing_kinds,
@@ -348,3 +349,35 @@ def test_url_は_CSV_の台帳ID_列ではなく分類コードで組む() -> No
     built = build_record(row(MONUMENTS, **{"台帳ID": "999"}), page(), BuildReport())
     assert built.record["url"] == "https://kunishitei.bunka.go.jp/heritage/detail/401/2485"
     assert built.record["ledger_id"] == "999"
+
+
+# --- 由来の分類 (ADR 0024) ---
+
+
+def test_レコードは由来の分類コードを持つ() -> None:
+    """台帳ID からは分類を戻せない。1 行が自分で名乗る (#74)。"""
+    built = build_record(row(MONUMENTS), page(), BuildReport())
+    assert built.record["category_code"] == "401"
+    assert built.record["category_name"] == "史跡名勝天然記念物"
+
+
+def test_分類は台帳ID_ではなく分類コードから戻す() -> None:
+    """台帳ID 401 には 401 / 411 / 412 が同居する (#74)。
+
+    台帳ID を見ていたら、登録記念物の行を史跡名勝天然記念物として扱ってしまう。
+    """
+    record = {"ledger_id": "401", "managed_id": "1", "category_code": "103"}
+    assert category_of(record) is SELECTED
+
+
+def test_分類コードを持たない行は台帳ID_から戻す() -> None:
+    """2026-08-23 より前に書いた行への控え (ADR 0024)。
+
+    当時の 4 分類では台帳ID と分類コードが同値だったので、これで正しい。
+    """
+    assert category_of({"ledger_id": "102", "managed_id": "23"}) is DESIGNATED
+
+
+def test_どちらからも戻せない行は名指しで断る() -> None:
+    with pytest.raises(KeyError):
+        category_of({"ledger_id": "999", "managed_id": "1"})
