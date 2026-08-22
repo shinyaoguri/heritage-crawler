@@ -9,7 +9,19 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_row
-from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED
+from heritage_crawler.catalog import (
+    CONSERVATION_TECHNIQUES,
+    DESIGNATED,
+    DOCUMENTED_INTANGIBLE_FOLK,
+    FINE_ARTS,
+    INTANGIBLE,
+    INTANGIBLE_FOLK,
+    MONUMENTS,
+    REGISTERED,
+    REGISTERED_MONUMENTS,
+    SELECTED,
+    WORLD_HERITAGE,
+)
 from heritage_crawler.detail_page import DetailPage
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.record import (
@@ -381,3 +393,89 @@ def test_分類コードを持たない行は台帳ID_から戻す() -> None:
 def test_どちらからも戻せない行は名指しで断る() -> None:
     with pytest.raises(KeyError):
         category_of({"ledger_id": "999", "managed_id": "1"})
+
+
+# --- 15 分類ぶんの項目 (ADR 0025) ---
+
+
+def test_美術工芸品の項目を読む() -> None:
+    """201 / 211 は建造物に無い項目を持つ (2026-08-23 実測)。"""
+    built = build_record(
+        row(FINE_ARTS),
+        page(
+            {
+                "国": "日本",
+                "作者": "伝狩野宗秀",
+                "ト書": "各巻末に文禄三年七月最上義光寄進の記がある",
+                "枝番": "00",
+                "指定番号（登録番号）": "01893",
+                "国宝・重文区分": "重要文化財",
+            }
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["country"] == "日本"
+    assert built.record["author"] == "伝狩野宗秀"
+    assert built.record["branch_number"] == "00"
+    assert built.record["designation_number"] == "01893"
+    assert "各巻末に" in built.record["annotation"]
+
+
+def test_美術工芸品も国宝と重要文化財に振り分ける() -> None:
+    """102 と同じ ``国宝・重文区分`` で決まる (ADR 0025)。"""
+    assert routing_kinds(FINE_ARTS, {"national_treasure_class": "国宝"}) == ["国宝"]
+
+
+def test_選択と認定は指定とは別の行為() -> None:
+    """312 / 313 は選択、303 / 323 / 304 は認定 (ADR 0025)。"""
+    kinds = {
+        code: build_record(
+            row(category), page(), BuildReport()
+        ).record["designation_kind"]
+        for code, category in (
+            ("312", DOCUMENTED_INTANGIBLE_FOLK),
+            ("303", INTANGIBLE),
+            ("304", CONSERVATION_TECHNIQUES),
+            ("411", REGISTERED_MONUMENTS),
+        )
+    }
+
+    assert kinds == {"312": "選択", "303": "認定", "304": "認定", "411": "登録"}
+
+
+def test_登録記念物の基準はカンマで割る() -> None:
+    """401 の ``指定基準`` と同じ形式 (1 欄にカンマ区切り)。"""
+    built = build_record(
+        row(REGISTERED_MONUMENTS),
+        page({"登録基準": "一 造園文化の発展に寄与しているもの,,三 歴史的意義を有するもの"}),
+        BuildReport(),
+    )
+
+    assert built.record["criteria"] == [
+        "一 造園文化の発展に寄与しているもの",
+        "三 歴史的意義を有するもの",
+    ]
+
+
+def test_無形民俗文化財の所在は地域のこともある() -> None:
+    """欄の名前が ``所在都道府県、地域`` になる (302 / 322 / 312)。"""
+    built = build_record(
+        row(INTANGIBLE_FOLK),
+        page({"所在都道府県、地域": "京都府", "保護団体名": "祇園祭山鉾連合会"}),
+        BuildReport(),
+    )
+
+    assert built.record["prefecture"] == "京都府"
+    assert built.record["protection_organization"] == "祇園祭山鉾連合会"
+
+
+def test_世界遺産の構成資産を残す() -> None:
+    built = build_record(
+        row(WORLD_HERITAGE),
+        page({"構成資産": "中尊寺、毛越寺、観自在王院跡", "登録基準６": "平泉の浄土庭園は…"}),
+        BuildReport(),
+    )
+
+    assert built.record["component_assets"] == "中尊寺、毛越寺、観自在王院跡"
+    assert built.record["criteria"] == ["平泉の浄土庭園は…"]
