@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
 
 from heritage_crawler.catalog import (
+    CATEGORIES_BY_CODE,
     NON_PREFECTURE_AREAS,
     PREFECTURES,
     Area,
@@ -162,6 +164,7 @@ MEASURE_KEYS: Final[dict[str, Field]] = {
 DERIVED_LABELS: Final[dict[str, str]] = {
     "ledger_id": "台帳ID",
     "managed_id": "管理対象ID",
+    "category_code": "分類コード",
     "category_name": "分類",
     "url": "詳細ページ",
     "designation_kind": "指定・登録・選定の別",
@@ -211,6 +214,7 @@ def display_label(label: str) -> str:
 KEY_ORDER: Final[tuple[str, ...]] = (
     "ledger_id",
     "managed_id",
+    "category_code",
     "category_name",
     "url",
     "name",
@@ -396,6 +400,8 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
     values: dict[str, Any] = {
         "ledger_id": row.get("台帳ID"),
         "managed_id": row.get("管理対象ID"),
+        # 台帳ID からは分類を戻せない。1 行が自分で名乗る (ADR 0024)。
+        "category_code": category.code,
         "category_name": category.name,
         # URL の第 1 セグメントは分類コード。CSV の台帳ID 列ではない (#74)。
         "url": detail_url(category.code, row.get("管理対象ID")),
@@ -476,6 +482,26 @@ def _split_values(raw: str) -> list[str]:
     []
     """
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def category_of(record: Mapping[str, Any]) -> Category:
+    """1 行から由来の分類を戻す (ADR 0024)。
+
+    **台帳ID からは戻せない。** 台帳ID 401 には 401 (史跡名勝天然記念物)・
+    411 (登録記念物)・412 (重要文化的景観) が同居しており、台帳ID で引くと
+    登録記念物の行を史跡名勝天然記念物として扱ってしまう (#74)。
+
+    ``category_code`` を持たない行は台帳ID から戻す。2026-08-23 より前に書いた
+    行への控えで、**当時の 4 分類では台帳ID と分類コードが同値だった**ので
+    これで正しい。全件を組み立て直せば消える。
+
+    >>> category_of({"ledger_id": "401", "managed_id": "1", "category_code": "103"}).name
+    '重要伝統的建造物群保存地区'
+    >>> category_of({"ledger_id": "102", "managed_id": "23"}).code
+    '102'
+    """
+    code = str(record.get("category_code") or record["ledger_id"])
+    return CATEGORIES_BY_CODE[code]
 
 
 def routing_kinds(category: Category, record: dict[str, Any]) -> list[str]:

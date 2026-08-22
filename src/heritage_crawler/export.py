@@ -23,7 +23,6 @@ from typing import Any, Final
 
 from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write, detail_key
 from heritage_crawler.catalog import (
-    CATEGORIES_BY_CODE,
     KIND_SPLIT_CATEGORIES,
     SEARCH_AREAS,
     TARGET_DATASETS,
@@ -47,6 +46,7 @@ from heritage_crawler.record import (
     BuildReport,
     Built,
     build_record,
+    category_of,
     resolve_location,
     routing_kinds,
 )
@@ -181,8 +181,8 @@ def build_dataset(
             logger.info("%d 件組み立てた", report.built)
 
     for record in reuse.retained if reuse else ():
-        # 台帳に出なかった行。分類は台帳ID から戻せる (分類コードと同じ値)。
-        category = CATEGORIES_BY_CODE[str(record["ledger_id"])]
+        # 台帳に出なかった行。分類は行が名乗る分類コードから戻す (ADR 0024)。
+        category = category_of(record)
         built = _reused(record)
         for dataset in _datasets_of(category, built.record, report):
             groups[(dataset, built.location.area)].append(built.record)

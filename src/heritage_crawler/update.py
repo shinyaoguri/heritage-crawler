@@ -40,6 +40,7 @@ from heritage_crawler.detail import Presence, Target
 from heritage_crawler.export import REMOVED_FILENAME, Reuse, removal_entry
 from heritage_crawler.ledger import EXPECTED_CSV_HEADER, LedgerRow, read_csv_rows
 from heritage_crawler.metadata import METADATA_FILENAME, accessed_date
+from heritage_crawler.record import category_of
 
 logger = logging.getLogger(__name__)
 
@@ -226,11 +227,15 @@ def read_existing(output_dir: Path, datasets: Sequence[Dataset]) -> Existing:
         for path in sorted(directory.glob("*.jsonl")) if directory.is_dir() else []:
             files += 1
             for number, key, record in _read_jsonl(path):
-                if str(record["ledger_id"]) not in CATEGORIES_BY_CODE:
-                    # 台帳ID から分類を戻せないと、消えたときの扱いも書き先も決まらない。
+                try:
+                    # 分類を戻せないと、消えたときの扱いも書き先も決まらない。
+                    category_of(record)
+                except KeyError as error:
                     raise UpdateError(
-                        f"{path} の {number} 行目の台帳ID が知らない分類: {record['ledger_id']!r}"
-                    )
+                        f"{path} の {number} 行目から分類を戻せない: "
+                        f"分類コード {record.get('category_code')!r} / "
+                        f"台帳ID {record.get('ledger_id')!r}"
+                    ) from error
                 records.setdefault(key, record)
                 repos.setdefault(key, set()).add(dataset.repo)
         meta = _read_metadata(output_dir / dataset.repo / METADATA_FILENAME)
@@ -437,11 +442,10 @@ def candidates(plan: UpdatePlan, existing: Existing) -> list[Target]:
     found = []
     for key in sorted(set(plan.removed) | set(plan.retained)):
         record = existing.records.get(key, {})
-        ledger_id, _, managed_id = key.partition("/")
-        # 出力レコードのキーは台帳ID ベースだが、詳細ページは分類コードで引く (#74)。
-        # 現行 4 分類は同値なのでこれで届く。分類が増える前に、レコード自身に
-        # 分類コードを持たせて置き換える。
-        found.append(Target(ledger_id, managed_id, str(record.get("name", ""))))
+        _, _, managed_id = key.partition("/")
+        # 出力レコードのキーは台帳ID ベースだが、詳細ページは分類コードで引く
+        # (#74)。行が名乗る分類コードから戻す (ADR 0024)。
+        found.append(Target(category_of(record).code, managed_id, str(record.get("name", ""))))
     return found
 
 

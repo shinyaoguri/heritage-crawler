@@ -29,6 +29,8 @@ from heritage_crawler.update import (
     LedgerDiff,
     Reason,
     UpdateError,
+    UpdatePlan,
+    candidates,
     compare_ledgers,
     format_plan,
     plan_update,
@@ -237,12 +239,27 @@ class Test前回の出力の読み戻し:
         assert read_existing(tmp_path, datasets_for([MONUMENTS])).records == {}
 
     def test_知らない分類の行は例外にする(self, tmp_path: Path) -> None:
-        """台帳ID から分類を戻せないと、消えたときの扱いも書き先も決まらない。"""
+        """分類を戻せないと、消えたときの扱いも書き先も決まらない。"""
         write_records(
             tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="901")]
         )
 
-        with pytest.raises(UpdateError, match="知らない分類"):
+        with pytest.raises(UpdateError, match="分類を戻せない"):
+            read_existing(tmp_path, datasets_for([MONUMENTS]))
+
+    def test_分類は台帳ID_ではなく分類コードから戻す(self, tmp_path: Path) -> None:
+        """台帳ID 401 には 401 / 411 / 412 が同居する (#74 / ADR 0024)。
+
+        台帳ID を見ていたら、知らない分類コードを持つ行を素通ししてしまう。
+        """
+        write_records(
+            tmp_path,
+            "historic-sites",
+            "13_tokyo.jsonl",
+            [record(ledger_id="401") | {"category_code": "901"}],
+        )
+
+        with pytest.raises(UpdateError, match="分類を戻せない"):
             read_existing(tmp_path, datasets_for([MONUMENTS]))
 
     def test_読めない行は例外にする(self, tmp_path: Path) -> None:
@@ -553,3 +570,26 @@ def test_計画の報告に件数と理由が出る() -> None:
     assert "そのまま 1 件" in text
     assert "落とす (指定解除) 1 件" in text
     assert "101/changed 新しい名前 (名称)" in text
+
+
+def test_存在を確かめる先は台帳ID_ではなく分類コードで組む() -> None:
+    """詳細ページは分類コードで引く (#74 / ADR 0024)。
+
+    台帳ID 401 の行が登録記念物 (411) なら、401 で引いてもエラーページしか
+    返らない。指定解除でないものを解除と読み違える。
+    """
+    plan = UpdatePlan(slot=0, complete=frozenset())
+    plan.removed.append("401/00003483")
+    existing = Existing(
+        records={
+            "401/00003483": record(
+                ledger_id="401", managed_id="00003483", category_code="103", name="函館公園"
+            )
+        }
+    )
+
+    found = candidates(plan, existing)
+
+    assert [target.url for target in found] == [
+        "https://kunishitei.bunka.go.jp/heritage/detail/103/00003483"
+    ]
