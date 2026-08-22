@@ -164,6 +164,7 @@ heritage-crawler render-readme    # この README の件数表を書き出した
 ```
 <出力ディレクトリ>/<リポジトリ名>/data/<都道府県コード>_<ローマ字>.jsonl
 <出力ディレクトリ>/<リポジトリ名>/meta.json
+<出力ディレクトリ>/<リポジトリ名>/status.json   (週次の差分更新だけが書く)
 例: national-treasures/data/29_nara.jsonl
 ```
 
@@ -203,6 +204,13 @@ JSON Lines を見ただけでは分からないものを機械可読で持つ。
 利用日は規約が求める表示の一部で、散文に手で書くと更新のたびに嘘になる。
 `meta.json` を正本にして、データを読む側が分類ごとの差異を知らずに済むようにする。
 
+**日付をもう 1 つ、`status.json` に持つ**
+([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
+`meta.json` の**利用日**が「そのデータを**取り出した**日」なのに対し、こちらの
+**確認日**は「データベースを**見にいった**日」で、中身が動かない週も進む。片方だけでは
+上流が静かなことと週次が止まっていることを区別できない。書くのは週次の
+`update-records` だけで、`build-records` は触らない (生成物を決定的なまま保つため)。
+
 ### 週次 — `update-records`
 
 **前回の状態はデータリポジトリの JSON Lines そのもの**として扱い、台帳と
@@ -240,8 +248,12 @@ heritage-crawler update-records                        # 取り直して書き�
 - 利用日は**そのデータを取り出した日**。行が 1 つも動かなかった種別は前回の
   日付を据え置く
 - 取り直していない行は前回の出力をそのまま使う。**生成物は決定的**なので、
-  データが変わらない週は `meta.json` を含めて 1 バイトも差分が出ない —
-  **確認しただけの週にコミットは立たない**
+  データが変わらない週は `meta.json` を含めて 1 バイトも差分が出ない
+- **確認した日は毎週 `status.json` に残す**
+  ([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
+  中身が動かなかった週も書くので、**静かなのか取得できていないのかがデータ
+  リポジトリを見るだけで分かる**。`--checked-date` の既定は日本時間の今日、
+  `--run-url` を渡すとその実行への入口も残る
 
 ### 件数表の作り直し — `render-readme`
 

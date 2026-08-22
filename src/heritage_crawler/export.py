@@ -50,11 +50,29 @@ from heritage_crawler.record import (
     resolve_location,
     routing_kinds,
 )
+from heritage_crawler.status import build_status, status_path, write_status
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_DIR: Final = Path("data")
 PROGRESS_EVERY: Final = 1000
+
+
+@dataclass(frozen=True)
+class Checked:
+    """データベースを見にいったことの記録 (ADR 0023)。
+
+    渡すと、書き出したデータセットごとに ``status.json`` を書く。**渡さなければ
+    書かない** — ``build-records`` はキャッシュを読み直すだけで、相手先を見に
+    いっていない。実行のたび日付が動く値をここだけに閉じ込めることで、
+    ``meta.json`` と JSON Lines は「同じ入力なら同じバイト列」のまま保つ。
+    """
+
+    date: str
+    """確認日 (``YYYY-MM-DD``、日本時間)。"""
+
+    run_url: str = ""
+    """この実行への URL。手元での組み立てには無いので既定は空。"""
 
 
 @dataclass(frozen=True)
@@ -123,6 +141,7 @@ def build_dataset(
     areas: Sequence[Area] = SEARCH_AREAS,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     reuse: Reuse | None = None,
+    checked: Checked | None = None,
 ) -> BuildReport:
     """キャッシュ済みの台帳と詳細から JSON Lines を組み立てて書き出す。
 
@@ -130,7 +149,8 @@ def build_dataset(
     (2 万件のうち 1 件で全体が止まると、直すまで何も出力できない)。
 
     ``reuse`` を渡すと、キャッシュから組み立てられない行を前回の出力で埋める
-    (差分更新。ADR 0018)。
+    (差分更新。ADR 0018)。``checked`` を渡すと ``status.json`` も書く
+    (確認した日の記録。ADR 0023)。
     """
     report = BuildReport()
     groups: dict[tuple[Dataset, Area], list[dict[str, Any]]] = defaultdict(list)
@@ -200,6 +220,24 @@ def build_dataset(
         payload = build_metadata(dataset, entries, labels[dataset], fetched_at, version, accessed)
         write_metadata(path, payload)
         report.files.append(f"{path} (利用日 {payload['source']['accessed_date']})")
+        if checked is None:
+            continue
+        # **行が動かなかったデータセットにも書く** (ADR 0023)。確かめたことを残すのが
+        # このファイルの役目で、書かずに済ませると「静か」と「止まっている」が
+        # また見分けられなくなる。件数と利用日は meta.json と同じ値を渡す。
+        status = status_path(output_dir, dataset)
+        write_status(
+            status,
+            build_status(
+                dataset,
+                checked_date=checked.date,
+                accessed_date=payload["source"]["accessed_date"],
+                changed=dataset in touched,
+                records=payload["counts"]["records"],
+                run_url=checked.run_url,
+            ),
+        )
+        report.files.append(f"{status} (確認日 {checked.date})")
 
     return report
 
