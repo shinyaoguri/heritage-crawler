@@ -108,6 +108,7 @@ pip install -e .
 heritage-crawler fetch-ledger     # 1 段目: 分類 × 地域の CSV をキャッシュへ
 heritage-crawler report-ledger    # 取得状況と網羅性を確かめる
 heritage-crawler audit-listing    # 検索結果一覧と突き合わせて取りこぼしを名指しする
+heritage-crawler compare-ledgers  # 前回の台帳と今回をバイト単位で突き合わせる
 heritage-crawler fetch-detail     # 2 段目: 台帳の各行から詳細ページをキャッシュへ
 heritage-crawler report-detail    # 詳細ページの取得状況を確かめる
 heritage-crawler build-records    # キャッシュから JSON Lines を組み立てる
@@ -290,10 +291,13 @@ heritage-crawler render-readme --check    # 書き換えず、ずれていれば
 上記を加工して作成
 ```
 
-**利用日 (`YYYY年M月D日`) をこの README に書き込まない。** データセットごとに違い、
-データが変わるたびに動く (ADR 0020) ので、写せばドリフトする — そしてこの値は
-**ドリフトがそのまま規約違反になる**。正本は各データリポジトリの `meta.json` で、
-日付を埋めた出典表記そのものも `source.attribution` に組み立ててある (ADR 0014)。
+**利用日 (`YYYY年M月D日`) は散文に書き込まない** — この README にも、各データ
+リポジトリの README と LICENSE にも。データセットごとに違い、データが変わるたびに
+動く (ADR 0020) ので、写せばドリフトする — そしてこの値は**ドリフトがそのまま
+規約違反になる**。正本は各データリポジトリの `meta.json` で、日付を埋めた出典表記
+そのものも `source.attribution` に組み立ててある
+([ADR 0014](docs/decisions/0014-machine-readable-dataset-metadata.md) /
+[ADR 0007](docs/decisions/0007-redistribute-text-with-attribution.md))。
 
 データベースへのアクセスはレートに上限を設けて行い、User-Agent に連絡先を記載する
 ([ADR 0010](docs/decisions/0010-rate-limit-by-request-start.md))。
@@ -335,8 +339,9 @@ gh workflow run reachability.yml
 
 毎週月曜 03:00 JST に走り、10 のデータリポジトリを clone → 台帳を取り直す →
 **前回の台帳とバイト単位で突き合わせる** → 変わったぶんだけ詳細を取り直す →
-変わったリポジトリだけ push する
-([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md))。
+**確認日と、変わったぶんを push する**
+([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md) /
+[ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
 手で押すこともできる (`dry-run` なら**台帳までは取って計画を出し**、詳細の取得と push とサイトの起動はしない。`slot` で巡回の枠を指定)。
 
 ```bash
@@ -347,9 +352,12 @@ gh workflow run weekly.yml -f dry-run=true
   次回の基準になるので、push の成否によらず必ず残す
 - **件数で当たりを付けない。** 増加と減少が同じ週に重なると数字が動かず、
   見逃すため。台帳を取り直すこと自体が正確さの担保になっている
-- **データが変わらない週はどこにもコミットが立たない。** 生成物が決定的で、
-  利用日も「そのデータを取り出した日」なので動かない。確かめ続けていることは
-  サイトの「最終確認」が示す (クローラーが確認日を渡す)
+- **データが変わらない週に動くのは確認日だけ。** 生成物が決定的で、利用日も
+  「そのデータを取り出した日」なので動かない。各データリポジトリには
+  `status.json` だけが動いた「◯◯ に確認 (差分なし)」のコミットが 1 つ立ち、
+  中身が変わった週とはコミットメッセージで区別できる
+  ([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
+  同じ確認日をサイトの「最終確認」にも渡す
 - **失敗したら Issue が立つ** (同じ Issue が open なら追記する)。誰も見ていない
   ところで走るので、止まっていることに気付けるようにしておく
 - 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
