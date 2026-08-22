@@ -189,7 +189,9 @@ def recover_missing(cache: LedgerCache, audit: ListingAudit) -> int:
         path.unlink(missing_ok=True)
         return 0
 
-    rows = [_csv_row(row) for row in sorted(audit.missing, key=lambda row: row.key)]
+    rows = [
+        _csv_row(row, audit.category) for row in sorted(audit.missing, key=lambda row: row.key)
+    ]
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer, lineterminator="\r\n")
     writer.writerow(EXPECTED_CSV_HEADER)
@@ -201,12 +203,12 @@ def recover_missing(cache: LedgerCache, audit: ListingAudit) -> int:
     return len(rows)
 
 
-def _csv_row(row: ListingRow) -> list[str]:
+def _csv_row(row: ListingRow, category: Category) -> list[str]:
     """一覧の行を台帳 CSV の 18 列に写す。埋められない列は空のまま。"""
     values = dict.fromkeys(EXPECTED_CSV_HEADER, "")
-    # 一覧が持つのは分類コードで、台帳ID ではない (#74)。現行 4 分類では同値なので
-    # このまま書ける。台帳ID が食い違う分類を足すときは、分類側から台帳ID を採る。
-    values["台帳ID"] = row.category_code
+    # **一覧が持つのは分類コードで、台帳ID ではない** (#74)。411 の一覧リンクは
+    # /heritage/detail/411/… だが、台帳ID 列に入るべき値は 401。分類側から採る。
+    values["台帳ID"] = category.ledger_id
     values["管理対象ID"] = row.kanri_taishou_id
     values["名称"] = row.name
     # 地域の列は見出しが分類で変わるので位置で指す (#74)。回収 CSV は既定の

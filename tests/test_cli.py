@@ -46,7 +46,7 @@ def test_サブコマンドの指定は必須() -> None:
 
 def test_知らない分類コードは受け付けない() -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["fetch-ledger", "--category", "901"])
+        build_parser().parse_args(["fetch-ledger", "--category", "999"])
 
 
 def test_知らない地域名は受け付けない() -> None:
@@ -78,9 +78,23 @@ def test_地域のヘルプが語彙と食い違わない(capsys: pytest.Capture
     assert int(stated.group(1)) == len(ALL_AREAS)
 
 
-def test_地域を指定しなければ分類ごとの分割軸に任せる() -> None:
-    """地域は分類ごとに違う (#74)。全分類に同じ 51 地域を投げない。"""
+def test_地域を指定しなければ分類ごとの分割軸に任せる(
+    cache_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """地域は分類ごとに違う (#74)。全分類に同じ地域一式を投げない。
+
+    ``--area`` を渡さないと下流へ None が届き、分類ごとの分割軸が使われる。
+    報告の「未取得 N 地域」がその N をそのまま映す。
+    """
     assert build_parser().parse_args(["fetch-ledger"]).areas is None
+
+    main(["--cache-dir", str(cache_dir), "report-ledger"])
+    printed = capsys.readouterr().out
+
+    assert "未取得 51 地域" in printed  # 101 など
+    assert "未取得 9 地域" in printed  # 303 / 313 (都道府県では引けない)
+    assert "未取得 1 地域" in printed  # 304 (地域欄が無い)
+    assert "未取得 60 地域" in printed  # 302 系 (都道府県 + 9 地域)
 
 
 def test_既定のレート上限は_1_req_s() -> None:
@@ -94,7 +108,9 @@ def test_報告は取得せずに出せる(cache_dir: Path, capsys: pytest.Captu
     printed = capsys.readouterr().out
     for code in ("101", "102", "103"):
         assert code in printed
+    # 分割軸は分類で違う (#74)。101 は 51 地域、304 は全国 1 回だけ。
     assert "未取得 51 地域" in printed
+    assert "未取得 1 地域" in printed
 
 
 def _fetch_ledgers_returning(

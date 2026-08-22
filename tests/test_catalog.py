@@ -53,9 +53,33 @@ def test_detail_url_空の_ID_を拒否する(category_code: str, kanri_taishou_
         detail_url(category_code, kanri_taishou_id)
 
 
-def test_取得対象の分類は_101_102_103_401() -> None:
-    """世界遺産 (901) は建造物・記念物と別軸の指定なので含めない (ADR 0002 / 0012)。"""
-    assert {c.code for c in TARGET_CATEGORIES} == {"101", "102", "103", "401"}
+def test_取得対象は検索フォームの全_19_分類() -> None:
+    """データベースの全データを網羅する (ADR 0025)。
+
+    分類コードは検索フォームの ``register_sub_id`` の option そのもの
+    (2026-08-23 実測)。増減したら気付けるように全部を並べる。
+    """
+    assert {c.code for c in TARGET_CATEGORIES} == {
+        "101", "102", "103",
+        "201", "211", "202",
+        "301", "311",
+        "302", "322", "312",
+        "303", "323", "313",
+        "304",
+        "401", "411", "412",
+        "901",
+    }
+
+
+def test_台帳ID_は分類コードと同じとは限らない() -> None:
+    """台帳ID には複数の分類が同居する (#74)。"""
+    by_ledger: dict[str, list[str]] = {}
+    for category in TARGET_CATEGORIES:
+        by_ledger.setdefault(category.ledger_id, []).append(category.code)
+
+    assert by_ledger["401"] == ["401", "411", "412"]
+    assert by_ledger["303"] == ["303", "323", "313"]
+    assert by_ledger["101"] == ["101"]
 
 
 def test_401の複合指定は両方のリポジトリへ書く() -> None:

@@ -65,16 +65,104 @@ class Category:
     area_scope: AreaScope = AreaScope.PREFECTURE
     """検索の分割軸 (``search_areas`` が実際の地域に開く)。"""
 
+    ledger_id: str = ""
+    """CSV の ``台帳ID`` 列に入る値。**空なら分類コードと同じ** (``__post_init__``)。
 
-# 取得対象の分類。世界遺産 (901) は建造物・記念物と別軸の指定のため含めない。
-# 名前は指定行為の呼び方に合わせた (record.DESIGNATION_KINDS と同じ 登録 / 指定 / 選定)。
+    台帳ID には複数の分類が同居する (#74)。401 に 401 / 411 / 412、303 に
+    303 / 323 / 313 など。取得も詳細ページも分類コードで回すが、一覧から台帳の行を
+    組み立て直すとき (``listing.recover_missing``) だけは台帳ID が要る。
+    """
+
+    def __post_init__(self) -> None:
+        if not self.ledger_id:
+            object.__setattr__(self, "ledger_id", self.code)
+
+
+# 取得対象は検索フォームの register_sub_id が提供する全 19 分類 (ADR 0025)。
+# 名前は原文のラベルをそのまま写す。件数は 2026-08-11 / 2026-08-23 の実測。
+
+# 有形文化財 (建造物)
 REGISTERED: Final = Category("101", "登録有形文化財（建造物）", 14748)
 DESIGNATED: Final = Category("102", "国宝・重要文化財（建造物）", 2633, expands_to_buildings=True)
+
+# 有形文化財 (美術工芸品)。台帳ID は 201 に 201 / 211 が同居する。
+FINE_ARTS: Final = Category(
+    "201", "国宝・重要文化財（美術工芸品）", 10954, expands_to_buildings=True
+)
+REGISTERED_FINE_ARTS: Final = Category("211", "登録有形文化財（美術工芸品）", 18, ledger_id="201")
+REGISTERED_ART: Final = Category("202", "登録美術品", 40)
+
+# 民俗文化財 (有形)。台帳ID は 301。
+TANGIBLE_FOLK: Final = Category("301", "重要有形民俗文化財", 229)
+REGISTERED_TANGIBLE_FOLK: Final = Category("311", "登録有形民俗文化財", 56, ledger_id="301")
+
+# 民俗文化財 (無形)。台帳ID は 302。地域の 9 区分も分割軸に持つ。
+INTANGIBLE_FOLK: Final = Category(
+    "302", "重要無形民俗文化財", 338, area_scope=AreaScope.PREFECTURE_AND_REGION
+)
+REGISTERED_INTANGIBLE_FOLK: Final = Category(
+    "322", "登録無形民俗文化財", 9, area_scope=AreaScope.PREFECTURE_AND_REGION, ledger_id="302"
+)
+DOCUMENTED_INTANGIBLE_FOLK: Final = Category(
+    "312",
+    "記録作成等の措置を講ずべき無形の民俗文化財",
+    662,
+    area_scope=AreaScope.PREFECTURE_AND_REGION,
+    ledger_id="302",
+)
+
+# 無形文化財。台帳ID は 303。**303 と 313 は都道府県では引けない**。
+INTANGIBLE: Final = Category("303", "重要無形文化財", 100, area_scope=AreaScope.REGION)
+REGISTERED_INTANGIBLE: Final = Category(
+    "323", "登録無形文化財", 7, area_scope=AreaScope.PREFECTURE_AND_REGION, ledger_id="303"
+)
+DOCUMENTED_INTANGIBLE: Final = Category(
+    "313",
+    "記録作成等の措置を講ずべき無形文化財",
+    132,
+    area_scope=AreaScope.REGION,
+    ledger_id="303",
+)
+
+# 選定保存技術。**地域欄そのものが無い** ので全国を 1 回で取る。
+CONSERVATION_TECHNIQUES: Final = Category(
+    "304", "選定保存技術", 82, area_scope=AreaScope.WHOLE
+)
+
+# 伝統的建造物群
 SELECTED: Final = Category("103", "重要伝統的建造物群保存地区", 126)
+
+# 記念物・文化的景観。台帳ID は 401 に 401 / 411 / 412 が同居する。
 MONUMENTS: Final = Category("401", "史跡名勝天然記念物", 3281)
 """記念物 (ADR 0012)。1 分類に 6 種別が同居し、棟には展開されない。"""
 
-TARGET_CATEGORIES: Final[tuple[Category, ...]] = (REGISTERED, DESIGNATED, SELECTED, MONUMENTS)
+REGISTERED_MONUMENTS: Final = Category("411", "登録記念物", 148, ledger_id="401")
+CULTURAL_LANDSCAPES: Final = Category("412", "重要文化的景観", 74, ledger_id="401")
+
+# 世界遺産。**他分類と別軸** で、同じ物件が重複して現れる (ADR 0025)。
+WORLD_HERITAGE: Final = Category("901", "世界遺産", 21)
+
+TARGET_CATEGORIES: Final[tuple[Category, ...]] = (
+    REGISTERED,
+    DESIGNATED,
+    FINE_ARTS,
+    REGISTERED_FINE_ARTS,
+    REGISTERED_ART,
+    TANGIBLE_FOLK,
+    REGISTERED_TANGIBLE_FOLK,
+    INTANGIBLE_FOLK,
+    REGISTERED_INTANGIBLE_FOLK,
+    DOCUMENTED_INTANGIBLE_FOLK,
+    INTANGIBLE,
+    REGISTERED_INTANGIBLE,
+    DOCUMENTED_INTANGIBLE,
+    CONSERVATION_TECHNIQUES,
+    SELECTED,
+    MONUMENTS,
+    REGISTERED_MONUMENTS,
+    CULTURAL_LANDSCAPES,
+    WORLD_HERITAGE,
+)
 
 CATEGORIES_BY_CODE: Final[dict[str, Category]] = {
     category.code: category for category in TARGET_CATEGORIES
@@ -126,6 +214,57 @@ TARGET_DATASETS: Final[tuple[Dataset, ...]] = (
     Dataset("places-of-scenic-beauty", "名勝", MONUMENTS, kinds=("名勝",)),
     Dataset("special-natural-monuments", "特別天然記念物", MONUMENTS, kinds=("特別天然記念物",)),
     Dataset("natural-monuments", "天然記念物", MONUMENTS, kinds=("天然記念物",)),
+    # 美術工芸品。建造物と同じ「国宝」でも、持つ項目が違うので分ける (ADR 0025)。
+    Dataset(
+        "national-treasures-of-fine-arts", "国宝（美術工芸品）", FINE_ARTS, kinds=("国宝",)
+    ),
+    Dataset(
+        "important-cultural-properties-of-fine-arts", "重要文化財（美術工芸品）", FINE_ARTS
+    ),
+    Dataset(
+        "registered-tangible-cultural-properties-of-fine-arts",
+        "登録有形文化財（美術工芸品）",
+        REGISTERED_FINE_ARTS,
+    ),
+    Dataset("registered-art-works", "登録美術品", REGISTERED_ART),
+    # 民俗文化財
+    Dataset(
+        "important-tangible-folk-cultural-properties", "重要有形民俗文化財", TANGIBLE_FOLK
+    ),
+    Dataset(
+        "registered-tangible-folk-cultural-properties",
+        "登録有形民俗文化財",
+        REGISTERED_TANGIBLE_FOLK,
+    ),
+    Dataset(
+        "important-intangible-folk-cultural-properties", "重要無形民俗文化財", INTANGIBLE_FOLK
+    ),
+    Dataset(
+        "registered-intangible-folk-cultural-properties",
+        "登録無形民俗文化財",
+        REGISTERED_INTANGIBLE_FOLK,
+    ),
+    Dataset(
+        "documented-intangible-folk-cultural-properties",
+        "記録作成等の措置を講ずべき無形の民俗文化財",
+        DOCUMENTED_INTANGIBLE_FOLK,
+    ),
+    # 無形文化財
+    Dataset("important-intangible-cultural-properties", "重要無形文化財", INTANGIBLE),
+    Dataset(
+        "registered-intangible-cultural-properties", "登録無形文化財", REGISTERED_INTANGIBLE
+    ),
+    Dataset(
+        "documented-intangible-cultural-properties",
+        "記録作成等の措置を講ずべき無形文化財",
+        DOCUMENTED_INTANGIBLE,
+    ),
+    Dataset("selected-conservation-techniques", "選定保存技術", CONSERVATION_TECHNIQUES),
+    # 記念物・文化的景観。内訳 (名勝地関係・遺跡関係…) では分けない (ADR 0025)。
+    Dataset("registered-monuments", "登録記念物", REGISTERED_MONUMENTS),
+    Dataset("important-cultural-landscapes", "重要文化的景観", CULTURAL_LANDSCAPES),
+    # 世界遺産。他分類と行が重複する (ADR 0025)。
+    Dataset("world-heritage-sites", "世界遺産", WORLD_HERITAGE),
 )
 
 

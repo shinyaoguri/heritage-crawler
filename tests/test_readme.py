@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from heritage_crawler.catalog import MONUMENTS, REGISTERED, TARGET_DATASETS
+from heritage_crawler.catalog import MONUMENTS, REGISTERED, TARGET_CATEGORIES, TARGET_DATASETS
 from heritage_crawler.readme import (
     BEGIN_MARKER,
     END_MARKER,
@@ -80,7 +80,11 @@ def test_分類ごとに数える(tmp_path: Path) -> None:
     )
 
     counts = {item.category.code: item.records for item in read_counts(tmp_path)}
-    assert counts == {"101": 2, "102": 0, "103": 0, "401": 1}
+    assert counts["101"] == 2
+    assert counts["401"] == 1
+    # 書いていない分類は 0。全 19 分類が並ぶ (ADR 0025)。
+    assert set(counts) == {category.code for category in TARGET_CATEGORIES}
+    assert sum(counts.values()) == 3
 
 
 def test_分類を絞れる(tmp_path: Path) -> None:

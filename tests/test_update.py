@@ -241,7 +241,7 @@ class Test前回の出力の読み戻し:
     def test_知らない分類の行は例外にする(self, tmp_path: Path) -> None:
         """分類を戻せないと、消えたときの扱いも書き先も決まらない。"""
         write_records(
-            tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="901")]
+            tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="999")]
         )
 
         with pytest.raises(UpdateError, match="分類を戻せない"):
@@ -256,7 +256,7 @@ class Test前回の出力の読み戻し:
             tmp_path,
             "historic-sites",
             "13_tokyo.jsonl",
-            [record(ledger_id="401") | {"category_code": "901"}],
+            [record(ledger_id="401") | {"category_code": "999"}],
         )
 
         with pytest.raises(UpdateError, match="分類を戻せない"):
