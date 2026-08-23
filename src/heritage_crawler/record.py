@@ -147,6 +147,12 @@ FIELD_KEYS: Final[dict[str, Field]] = {
     # 登録記念物 (411) / 重要文化的景観 (412)。401 と同じくカンマ区切りで詰まる
     "登録基準": _split("criteria"),
     "選定基準": _split("criteria"),
+    # 美術工芸品の続き。全件を読んで見つけたもの (2026-08-23)
+    "品質・形状": Field("structure"),
+    "画賛・奥書・銘文等": Field("inscriptions"),
+    "伝来・その他参考となるべき事項": Field("notes"),
+    "選択基準２": _list("criteria"),
+    "選択基準３": _list("criteria"),
     # 世界遺産 (901)。登録基準は UNESCO の i〜vi にあたる 6 欄
     "構成資産": Field("component_assets"),
     "登録基準３": _list("criteria"),
@@ -197,7 +203,11 @@ ROUTING_KEYS: Final[dict[str, str]] = {
 MEASURES_LABEL: Final = "指定等後に行った措置"
 """関連情報の欄にある 401 固有のラベル。有無だけを ``has_measures`` に採る。"""
 
-ANNEX_KEYS: Final[dict[str, Field]] = {"附名称": Field("name"), "附員数": Field("quantity")}
+ANNEX_KEYS: Final[dict[str, Field]] = {
+    "附名称": Field("name"),
+    "附員数": Field("quantity"),
+    "附ト書": Field("annotation"),
+}
 ANNEX_LABEL: Final = "附指定"
 ANNEX_LABELS: Final[frozenset[str]] = frozenset({ANNEX_LABEL, "附"})
 """附指定の関連情報の見出し。**民俗文化財 (301 / 311) では ``附`` と短い** (実測)。"""
@@ -205,7 +215,19 @@ ANNEX_LABELS: Final[frozenset[str]] = frozenset({ANNEX_LABEL, "附"})
 ATTACHMENT_LABEL: Final = "添付ファイル"
 
 ITEMIZATION_LABEL: Final = "一つ書"
-"""美術工芸品 (201 / 211) の指定の内訳。一覧は空で、有無だけが読める。"""
+"""美術工芸品 (201 / 211) の指定の内訳の見出し。"""
+
+ITEMIZATION_KEYS: Final[dict[str, Field]] = {
+    "一つ書主名称": Field("name"),
+    "一つ書員数": Field("quantity"),
+    "ト書": Field("annotation"),
+}
+"""一つ書 1 件ぶんの対応表 (201 / 211)。
+
+「◯◯及び△△」とまとめて指定されたものの内訳。**主情報の ``ト書`` と同じラベルが
+一覧の中にも出る**ので、振り分けは ``一つ書主名称`` の有無で決まる
+(``_rellists`` が保持者・措置を先に判定する)。
+"""
 
 HOLDER_LABELS: Final[frozenset[str]] = frozenset(
     {
@@ -248,6 +270,8 @@ HOLDER_KEYS: Final[dict[str, Field]] = {
     "認定区分": Field("certification_class"),
     "認定書の交付又は再発行の年月日（選択書の交付年月日）": _date("certificate_date"),
     "認定書（選択書）の記号番号": Field("certificate_number"),
+    "認定（指定）年月日": _date("date"),
+    "総合認定役割": Field("role"),
 }
 """保持者・保持団体 1 件ぶんの対応表。
 
@@ -301,6 +325,7 @@ DERIVED_LABELS: Final[dict[str, str]] = {
     "annexes": ANNEX_LABEL,
     "measures": MEASURES_LABEL,
     "holders": "保持者・保持団体",
+    "itemization": ITEMIZATION_LABEL,
     "has_attachment": f"{ATTACHMENT_LABEL}の有無",
     "has_measures": f"{MEASURES_LABEL}の有無",
     "has_itemization": f"{ITEMIZATION_LABEL}の有無",
@@ -358,6 +383,7 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "western_year",
     "area",
     "structure",
+    "inscriptions",
     "dimensions",
     "history",
     "component_assets",
@@ -391,6 +417,7 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "annexes",
     "measures",
     "holders",
+    "itemization",
     "has_attachment",
     "has_measures",
     "has_itemization",
@@ -584,6 +611,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
     _set_or_drop(values, "annexes", rellists.annexes)
     _set_or_drop(values, "measures", rellists.measures)
     _set_or_drop(values, "holders", rellists.holders)
+    _set_or_drop(values, "itemization", rellists.itemization)
     for label, present in page.related.items():
         if label == ATTACHMENT_LABEL:
             values["has_attachment"] = present
@@ -709,6 +737,7 @@ class Rellists:
     annexes: list[dict[str, Any]] = field(default_factory=list)
     measures: list[dict[str, Any]] = field(default_factory=list)
     holders: list[dict[str, Any]] = field(default_factory=list)
+    itemization: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _rellists(
@@ -722,10 +751,14 @@ def _rellists(
     """
     found = Rellists()
     for raw in page.rellists:
+        # **順序に意味がある。** ``ト書`` は一つ書と主情報の両方に出るので、
+        # 措置と保持者を先に落としてから一つ書を見る。
         if raw.keys() & MEASURE_KEYS.keys():
             keys, target, prefix = MEASURE_KEYS, found.measures, "measures"
         elif raw.keys() & HOLDER_KEYS.keys():
             keys, target, prefix = HOLDER_KEYS, found.holders, "holders"
+        elif raw.keys() & ITEMIZATION_KEYS.keys():
+            keys, target, prefix = ITEMIZATION_KEYS, found.itemization, "itemization"
         else:
             keys, target, prefix = ANNEX_KEYS, found.annexes, "annexes"
         if entry := _rellist_entry(raw, keys, category, report, labels, prefix):
@@ -749,12 +782,14 @@ def _check_missing(
 ) -> None:
     """「あり」と書いてあるのに一覧が読めていないものを報告に積む。
 
-    ``一つ書`` (201 / 211) は一覧そのものが空なので数えない (実測)。
+    ``related`` が「あり」でないものは数えない。201 の ``一つ書`` は欄そのものは
+    全件にあり、中身を持つのは 6,393 件だけ (2026-08-23 実測)。
     """
     groups: list[tuple[Collection[str], list[dict[str, Any]]]] = [
         (ANNEX_LABELS, found.annexes),
         ({MEASURES_LABEL}, found.measures),
         (HOLDER_LABELS, found.holders),
+        ({ITEMIZATION_LABEL}, found.itemization),
     ]
     for wanted, entries in groups:
         for label in wanted:

@@ -571,18 +571,57 @@ def test_民俗文化財の附は附指定へ寄せる() -> None:
     assert dict(report.missing_rellists) == {"301 附": 1}
 
 
-def test_美術工芸品の一つ書は有無だけ残す() -> None:
-    """一覧そのものが空なので、取りこぼしとしては数えない (実測)。"""
-    report = BuildReport()
+def test_美術工芸品の一つ書の内訳を読む() -> None:
+    """「◯◯及び△△」とまとめて指定されたものの内訳 (201 / 211)。
+
+    11,433 件のうち 6,393 件が中身を持つ (2026-08-23 実測)。
+    """
     built = build_record(
+        row(FINE_ARTS),
+        DetailPage(
+            fields={"名称": "紙本著色遊行上人絵"},
+            related={"一つ書": True},
+            rellists=(
+                {"一つ書主名称": "巻第一", "一つ書員数": "1巻", "ト書": "文禄三年の記がある"},
+                {"一つ書主名称": "巻第二", "一つ書員数": "1巻"},
+            ),
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["has_itemization"] is True
+    assert built.record["itemization"] == [
+        {"name": "巻第一", "quantity": "1巻", "annotation": "文禄三年の記がある"},
+        {"name": "巻第二", "quantity": "1巻"},
+    ]
+
+
+def test_一つ書の欄があっても中身が無ければ取りこぼしに数える() -> None:
+    """欄そのものは全件にあるが、「あり」なのに読めていないなら疑う。"""
+    report = BuildReport()
+    build_record(
         row(FINE_ARTS),
         DetailPage(fields={"名称": "紙本著色遊行上人絵"}, related={"一つ書": True}),
         report,
     )
 
-    assert built.record["has_itemization"] is True
     assert not report.unknown_labels
-    assert not report.missing_rellists
+    assert dict(report.missing_rellists) == {"201 一つ書": 1}
+
+
+def test_一つ書の_ト書_を主情報と取り違えない() -> None:
+    """``ト書`` は主情報にも一つ書の中にも出る。振り分けは一つ書主名称で決まる。"""
+    built = build_record(
+        row(FINE_ARTS),
+        DetailPage(
+            fields={"名称": "刀", "ト書": "無銘"},
+            rellists=({"一つ書主名称": "刀身", "ト書": "反り高し"},),
+        ),
+        BuildReport(),
+    )
+
+    assert built.record["annotation"] == "無銘"
+    assert built.record["itemization"] == [{"name": "刀身", "annotation": "反り高し"}]
 
 
 def test_世界遺産の関連情報は他分類へのリンク() -> None:
