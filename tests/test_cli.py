@@ -92,9 +92,8 @@ def test_地域を指定しなければ分類ごとの分割軸に任せる(
     printed = capsys.readouterr().out
 
     assert "未取得 51 地域" in printed  # 101 など
-    assert "未取得 9 地域" in printed  # 303 / 313 (都道府県では引けない)
-    assert "未取得 1 地域" in printed  # 304 (地域欄が無い)
-    assert "未取得 60 地域" in printed  # 302 系 (都道府県 + 9 地域)
+    assert "未取得 1 地域" in printed  # 304 / 303 / 313 / 323 / 312 (全国 1 回)
+    assert "未取得 60 地域" in printed  # 302 / 322 (都道府県 + 9 地域)
 
 
 def test_既定のレート上限は_1_req_s() -> None:
