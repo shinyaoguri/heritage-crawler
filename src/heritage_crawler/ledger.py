@@ -479,6 +479,14 @@ class CategorySummary:
     件数表示ではなく中身を数えたもの。重複を除いた実数がこれで分かる。
     """
 
+    recovered_count: int = 0
+    """一覧から回収した行数 (ADR 0017 / ADR 0026)。
+
+    **地域ごとの件数表示には入らない** ので、回収しても ``difference`` は動かない。
+    「どの地域でも引けない」と報せ続けたまま黙って回収済みだと読み違えられるため、
+    注記に添える。
+    """
+
     @property
     def is_complete(self) -> bool:
         return self.fetched_areas == self.total_areas
@@ -528,17 +536,28 @@ class CategorySummary:
         if (missing := self.missing_count) is not None:
             # 中身の異なり数と比べているので、重複があっても取りこぼしが隠れない。
             if missing > 0:
-                return f"どの地域でも引けない {missing:,} 件"
+                return f"どの地域でも引けない {missing:,} 件{self._recovered_note}"
             if missing < 0:
                 return f"全国件数より {-missing:,} 件多い (件数表示の数え方を疑う)"
         elif self.difference is not None:
             # 棟に展開される分類は異なり数 (棟) と全国件数 (指定) の単位が違う。
             # 件数表示どうしの差しか見られず、重複と取りこぼしは相殺しうる (Issue #28)。
             if self.difference < 0:
-                return f"どの地域でも引けない {-self.difference:,} 件"
+                return f"どの地域でも引けない {-self.difference:,} 件{self._recovered_note}"
             if self.difference:
                 return f"地域をまたぐ重複 {self.difference:,} 件"
         return ""
+
+    @property
+    def _recovered_note(self) -> str:
+        """回収済みなら注記に添える。取りこぼしが残っているように読ませないため。
+
+        **件数は一致しない。** 差は件数表示どうしの引き算で重複と相殺しうるが
+        (Issue #28)、回収数は一覧で 1 件ずつ名指しした実数だから (201 は 88 と 92)。
+        """
+        if not self.recovered_count:
+            return ""
+        return f" (一覧から {self.recovered_count:,} 件回収済み)"
 
     @property
     def looks_complete(self) -> bool:
@@ -587,9 +606,18 @@ def summarize(
                 whole_count=cache.whole_counts.get(category.code),
                 row_count=sum(entry.row_count for entry in entries),
                 unique_key_count=len(keys),
+                recovered_count=_recovered_count(cache, category),
             )
         )
     return summaries
+
+
+def _recovered_count(cache: LedgerCache, category: Category) -> int:
+    """一覧から回収した行数。回収 CSV が無ければ 0。"""
+    path = cache.recovered_csv_path(category)
+    if not path.exists():
+        return 0
+    return len(read_csv_rows(path.read_bytes()))
 
 
 def format_summary(summaries: Sequence[CategorySummary]) -> str:
