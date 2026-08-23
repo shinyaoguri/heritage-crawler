@@ -16,10 +16,10 @@
 |---|---|---|
 | **国指定文化財等データベース** (文化庁) | 原本 | — (**読むだけ**。1 req/s、User-Agent に連絡先) |
 | **heritage-crawler** (このリポジトリ) | 取り出して組み立てるコード。**データは持たない** (`data/` は追跡外) | 人 |
-| **データリポジトリ 10 個** (`code4heritage` org) | **データの正本**。JSON Lines・`meta.json`・`removed.jsonl`・種別ごとの ZIP | クローラー (中身) と heritages (リリース) の**両方** |
+| **データリポジトリ 26 個** (`code4heritage` org) | **データの正本**。JSON Lines・`meta.json`・`removed.jsonl`・種別ごとの ZIP | クローラー (中身) と heritages (リリース) の**両方** |
 | **heritages** (`code4heritage/heritages`) | 閲覧サイトと配布物を作るコード。**データは持たない** | 人 |
 
-データリポジトリ 10 個は分類コードと 1:1 ではない
+データリポジトリ 26 個は分類コードと 1:1 ではない
 ([ADR 0009](decisions/0009-output-to-existing-per-type-repositories.md) /
 [ADR 0012](decisions/0012-crawl-monuments-and-route-by-kind.md))。102 は詳細ページの
 「国宝・重文区分」で 2 つに、401 は種別で 6 つに分かれ、複合指定は 2 つのリポジトリへ
@@ -48,7 +48,7 @@ flowchart TD
         L --> D --> F --> B
     end
 
-    subgraph DR["データリポジトリ 10 個 (code4heritage)"]
+    subgraph DR["データリポジトリ 26 個 (code4heritage)"]
         J["data/*.jsonl<br/>meta.json<br/>removed.jsonl"]
         RZ["リリース<br/>(種別ごとの ZIP)"]
     end
@@ -79,7 +79,7 @@ flowchart TD
 
 | 時刻 (JST) | どこで | 何が起きるか |
 |---|---|---|
-| 月 03:00 | crawler | `weekly.yml` が起動。データリポジトリ 10 個を clone (= 前回の状態) し、前回の台帳を artifact から取り出す |
+| 月 03:00 | crawler | `weekly.yml` が起動。データリポジトリ 26 個を clone (= 前回の状態) し、前回の台帳を artifact から取り出す |
 | | crawler | **1 段目**。分類 × 51 地域の CSV を取り直す (204 リクエスト)。1 地域取れなくても止めず、残りは `retry.sh` の次の回が試す ([ADR 0022](decisions/0022-keep-fetching-the-ledger-when-one-area-fails.md)) |
 | | crawler | 前回の台帳と**バイト単位**で比べ、違ったファイルの行だけキーで突き合わせる。CSV が動いた週だけ `audit-listing --recover` を挟む |
 | | crawler | **2 段目**。新規・値が変わったぶん・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
@@ -186,7 +186,8 @@ Pages は最後に成功したデプロイを配り続けるので、壊れた�
 週次で回らないものが 2 つある。どちらもローカルで、Actions は差分専用
 ([ADR 0006](decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
 
-- **初回の全件取得** — 23,742 件・約 6.6 時間。2026-08-12 に完走済み
+- **初回の全件取得** — 建造物・記念物の 4 分類 23,742 件は 2026-08-12 に完走。
+  残る 15 分類 (約 13,300 件) は 2026-08-23 に取得 (#74)
 - **スキーマを変えたときの全件組み立て直し** (`build-records`) — キャッシュから
   作り直すので通信しない。**`removed.jsonl` は触らない** (キャッシュからは履歴を
   再現できず、書けば消える)
