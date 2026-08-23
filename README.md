@@ -350,7 +350,7 @@ gh workflow run reachability.yml
 gh workflow run weekly.yml -f dry-run=true
 ```
 
-- **前回の台帳は artifact で持ち回る** (189 ファイル / 6.3 MB、保持 90 日)。
+- **前回の台帳は artifact で持ち回る** (499 ファイル / 11 MB、保持 90 日)。
   次回の基準になるので、push の成否によらず必ず残す
 - **件数で当たりを付けない。** 増加と減少が同じ週に重なると数字が動かず、
   見逃すため。台帳を取り直すこと自体が正確さの担保になっている
