@@ -128,8 +128,8 @@ heritage-crawler render-readme    # この README の件数表を書き出した
 
 ### 1 段目 — `fetch-ledger`
 
-4 分類 × 51 地域 (47 都道府県 + ２県以上 + 地域を定めない + 未正規化の値 2 つ)
-を順に取得する (204 リクエスト / 約 30 分)。
+19 分類 × その分類の分割軸 (都道府県中心。分類によっては全国 1 回)
+を順に取得する (約 570 リクエスト / 約 40 分)。
 
 分類ごとに地域で絞らない検索も 1 回行い、その全国件数と地域合計を突き合わせて
 網羅性を確かめる。差が出たら報告に出る (負 = どの地域でも引けない指定がある、
@@ -137,8 +137,10 @@ heritage-crawler render-readme    # この README の件数表を書き出した
 
 ### 2 段目 — `fetch-detail`
 
-台帳の各行の `(台帳ID, 管理対象ID)` から詳細ページの URL を組み立てて巡回し、
-生 HTML を gzip でキャッシュへ落とす (23,742 件 / 1 req/s で約 6.6 時間)。
+台帳の各行の `(分類コード, 管理対象ID)` から詳細ページの URL を組み立てて巡回し、
+生 HTML を gzip でキャッシュへ落とす (約 37,000 件 / 1 req/s で約 10 時間)。
+**URL の第 1 セグメントは分類コードで、CSV の台帳ID ではない** — 台帳ID には
+複数の分類が同居する ([#74](https://github.com/shinyaoguri/heritage-crawler/issues/74))。
 解析はしない — パース仕様を変えるたびに 2 万ページを取り直さずに済むよう、
 取得と解析を分けてある ([ADR 0006](docs/decisions/0006-run-initial-crawl-locally-updates-on-actions.md))。
 
@@ -337,7 +339,7 @@ gh workflow run reachability.yml
 
 ### 週次の差分更新 (`.github/workflows/weekly.yml`)
 
-毎週月曜 03:00 JST に走り、10 のデータリポジトリを clone → 台帳を取り直す →
+毎週月曜 03:00 JST に走り、26 のデータリポジトリを clone → 台帳を取り直す →
 **前回の台帳とバイト単位で突き合わせる** → 変わったぶんだけ詳細を取り直す →
 **確認日と、変わったぶんを push する**
 ([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md) /
