@@ -83,6 +83,19 @@ def put_ledger(
     )
 
 
+def put_recovered(cache: LedgerCache, category: Category, ids: Sequence[str]) -> None:
+    """回収 CSV をキャッシュへ置く (``listing.recover_missing`` が書くもの)。
+
+    地域別と同じ 18 列だが、地域欄は空のまま (ADR 0026)。
+    """
+    rows = [
+        make_row({"台帳ID": category.ledger_id, "管理対象ID": managed_id}) for managed_id in ids
+    ]
+    path = cache.recovered_csv_path(category)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(make_csv(rows))
+
+
 def put_detail(
     cache: DetailCache,
     category: Category,

@@ -39,7 +39,12 @@ from heritage_crawler.listing import (
 from heritage_crawler.search_page import ListingRow, ParseError
 
 CATEGORY = MONUMENTS  # 401 (指定 = 1 行。一覧と突き合わせられる)
-EXPANDED = DESIGNATED  # 102 (1 指定が複数の棟に展開される)
+UNLISTABLE = DESIGNATED  # 102 (一覧のキーが台帳に載らない)
+EXPANDED = dataclasses.replace(CATEGORY, expands_to_buildings=True)
+"""201 相当 — 1 指定が複数行に展開されるが、一覧のキーは台帳に載る (ADR 0026)。
+
+フィクスチャは 401 の一覧なので、分類の性質だけ差し替えて使う。
+"""
 HOKKAIDO = SEARCH_AREAS[0]
 
 LISTED_KEYS = ["2", "3420", "00003542", "1979", "4001"]
@@ -148,12 +153,26 @@ def test_表示件数を変えて空になったら失敗させる() -> None:
         fetch_listing(fetcher, Session(fetcher), CATEGORY)
 
 
-def test_棟に展開される分類は突き合わせられない() -> None:
-    """一覧は指定単位、CSV は棟単位。数えるものが違うので、通信する前に断る。"""
+def test_一覧のキーが台帳に載らない分類は突き合わせられない() -> None:
+    """102 の一覧は全ページ辿っても 1,907 行しか読めない (件数表示は 2,633)。
+
+    複数棟の指定が詳細ページへ直接リンクされないため。網羅性の担保に使えないので
+    通信する前に断る (ADR 0026)。
+    """
     fetcher = make_fetcher()
-    with pytest.raises(ListingError, match="棟"):
-        fetch_listing(fetcher, Session(fetcher), EXPANDED)
+    with pytest.raises(ListingError, match="台帳のキーに載らない"):
+        fetch_listing(fetcher, Session(fetcher), UNLISTABLE)
     assert fetcher.calls == []
+
+
+def test_展開される分類でも一覧のキーが載るなら突き合わせる() -> None:
+    """201 は 1 指定が複数の件に展開されるが、一覧の行は台帳のキーを指す。
+
+    展開の有無と、一覧のキーが台帳に載るかは別の性質 (ADR 0026)。
+    """
+    fetcher = make_fetcher()
+    listing = fetch_listing(fetcher, Session(fetcher), EXPANDED)
+    assert [row.kanri_taishou_id for row in listing.rows] == LISTED_KEYS
 
 
 def test_台帳に無い指定を取りこぼしとして名指しする(cache_dir: Path) -> None:
@@ -188,6 +207,36 @@ def test_回収した行を台帳として読み直せる(cache_dir: Path) -> No
         "134.32870500000000",
     )
     assert rows[0].get("都道府県") == ""
+
+
+def test_回収では地域欄を写さない(cache_dir: Path) -> None:
+    """一覧の見出しは全分類で「都道府県」だが、CSV の 12 列目の意味は分類で変わる。
+
+    201 は所有者住所で、一覧に「宮城県」と出ている指定の CSV 側の欄が空だった
+    (2026-08-24 実測)。意味の違う欄へ値を移さない (ADR 0026)。
+    """
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, CATEGORY, HOKKAIDO, ["2", "3420", "00003542", "1979"])
+    assert recover_missing(cache, audit_listing(cache, collect(), SEARCH_AREAS)) == 1
+
+    rows = [row for row in read_ledger_rows(cache, [CATEGORY]) if row.key == "401/4001"]
+    assert len(rows) == 1
+    # 一覧の行は地域欄に「地域を定めない」を持つ (test_報告は取りこぼしの理由まで出す)。
+    assert rows[0].get("都道府県") == ""
+    assert rows[0].get("名称") == "座標の無い指定"
+
+
+def test_展開される分類の余りは指定解除として報告しない(cache_dir: Path) -> None:
+    """201 は 2 件目以降が一覧に出ないので余りが常に出る (実測 571 件)。
+
+    ここで「指定解除を疑う」と書くと毎週の誤報になる (ADR 0026)。
+    """
+    cache = LedgerCache(cache_dir)
+    put_ledger(cache, EXPANDED, HOKKAIDO, [*LISTED_KEYS, "9999"])
+    listing = dataclasses.replace(collect(), category=EXPANDED)
+    report = format_audits([audit_listing(cache, listing, SEARCH_AREAS)])
+    assert "複数行に展開されるぶん" in report
+    assert "指定解除" not in report
 
 
 def test_回収_CSV_は決定的(cache_dir: Path) -> None:

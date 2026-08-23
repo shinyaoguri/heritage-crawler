@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeFetcher, fixture, make_csv, put_ledger
+from conftest import FakeFetcher, fixture, make_csv, put_ledger, put_recovered
 from heritage_crawler.cache import LedgerCache
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, SEARCH_AREAS
 from heritage_crawler.ledger import (
@@ -409,6 +409,20 @@ def test_取りこぼしを報告に出す(cache_dir: Path) -> None:
     fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
     report = format_summary(summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO]))
     assert "どの地域でも引けない 6 件" in report
+
+
+def test_回収済みなら取りこぼしの注記にそう書く(cache_dir: Path) -> None:
+    """回収しても件数表示の差は動かない (回収ぶんは地域の件数に入らない)。
+
+    黙っていると穴が残っているように読める。件数が一致しないのは、差が件数表示
+    どうしの引き算で相殺しうる一方、回収数は一覧で名指しした実数だから (ADR 0026)。
+    """
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(make_fetcher(whole=40), cache, [CATEGORY], [HOKKAIDO, TOKYO])
+    put_recovered(cache, CATEGORY, ["9001", "9002"])
+
+    report = format_summary(summarize(cache, [CATEGORY], [HOKKAIDO, TOKYO]))
+    assert "どの地域でも引けない 6 件 (一覧から 2 件回収済み)" in report
 
 
 def test_件数表示では相殺して消える取りこぼしをキーの異なり数で暴く(cache_dir: Path) -> None:

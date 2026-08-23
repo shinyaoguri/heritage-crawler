@@ -9,8 +9,9 @@
 ``(台帳ID, 管理対象ID)``・名称・地域欄・緯度経度を持つ。CSV が下流へ渡している
 のは緯度経度だけなので、一覧の行から台帳の行を組み立て直せる。
 
-**棟に展開される分類 (102) は対象外。** 一覧の行は指定単位、CSV の行は棟単位で、
-複数棟の指定は詳細ページへ直接リンクされない (棟一覧のモーダルになる)。
+**使えるのは一覧のキーが台帳のキーに載る分類だけ** (``Category.audits_with_listing``。
+ADR 0026)。載らない分類では台帳にある正しいキーが「取りこぼし」に化ける。展開の
+有無とは別の性質で、201 は 1 指定が複数の件に展開されるが一覧のキーは台帳に載る。
 
 リクエスト数は ``ceil(指定件数 / 100) + 2``。全分類でも 200 弱で、台帳取得 (204)
 と同じ桁に収まる。
@@ -30,7 +31,6 @@ from heritage_crawler.cache import LedgerCache, atomic_write
 from heritage_crawler.catalog import Area, Category
 from heritage_crawler.http import Fetcher
 from heritage_crawler.ledger import (
-    AREA_COLUMN_INDEX,
     EXPECTED_CSV_HEADER,
     SEARCH_URL,
     Session,
@@ -84,10 +84,10 @@ class Listing:
 
 def fetch_listing(fetcher: Fetcher, session: Session, category: Category) -> Listing:
     """地域で絞らずに検索し、一覧を最後のページまで辿ってキーを集める。"""
-    if category.expands_to_buildings:
+    if not category.audits_with_listing:
         raise ListingError(
-            f"{category.code} は 1 指定が複数の棟に展開されるため、一覧のキーは台帳と"
-            "突き合わせられない (一覧は指定単位、CSV は棟単位)"
+            f"{category.code} の一覧のキーは台帳のキーに載らないため突き合わせられない "
+            "(複数棟の指定が詳細ページへ直接リンクされず、行として読めない)"
         )
 
     page = _widen(fetcher, search(fetcher, session, category, "", parse_listing_page))
@@ -151,7 +151,12 @@ class ListingAudit:
     """一覧にあって台帳に無い = 取りこぼし。**1 件ずつ名指しできる**のが要点。"""
 
     unexpected: tuple[str, ...]
-    """台帳にあって一覧に無いキー。指定解除の直後などに起こりうる。"""
+    """台帳にあって一覧に無いキー。指定解除の直後などに起こりうる。
+
+    **展開される分類では常に出る** — 一覧は指定単位、CSV は件単位で、2 件目以降は
+    一覧に行を持たない (201 で 571 件。2026-08-24 実測)。取りこぼしの証拠になるのは
+    ``missing`` の側だけ。
+    """
 
     @property
     def category(self) -> Category:
@@ -177,7 +182,7 @@ def audit_listing(
 def recover_missing(cache: LedgerCache, audit: ListingAudit) -> int:
     """取りこぼした指定を、一覧の行から台帳の CSV として書き直す。
 
-    埋めるのは名称・地域欄・緯度経度だけ。**CSV から採るのは緯度経度だけ**
+    埋めるのはキー・名称・緯度経度だけ。**CSV から採るのは緯度経度だけ**
     (残りは詳細ページから採る。ADR 0008) なので、これで ``fetch-detail`` も
     ``build-records`` も通常の行と同じように流れる。
 
@@ -211,9 +216,10 @@ def _csv_row(row: ListingRow, category: Category) -> list[str]:
     values["台帳ID"] = category.ledger_id
     values["管理対象ID"] = row.kanri_taishou_id
     values["名称"] = row.name
-    # 地域の列は見出しが分類で変わるので位置で指す (#74)。回収 CSV は既定の
-    # 見出しで書き出すが、意味は「その分類の地域欄」で、都道府県とは限らない。
-    values[EXPECTED_CSV_HEADER[AREA_COLUMN_INDEX]] = row.area
+    # **地域欄は写さない** (ADR 0026)。一覧の見出しは全分類で「都道府県」だが、
+    # CSV の 12 列目の意味は分類で変わる (#74) — 201 は所有者住所で、実際に
+    # 一覧に「宮城県」と出ている指定の CSV 側の欄が空だった。下流が CSV から
+    # 採るのは緯度経度だけ (ADR 0008) なので、埋めずに空のままにする。
     values["緯度"] = row.latitude
     values["経度"] = row.longitude
     return [values[column] for column in EXPECTED_CSV_HEADER]
@@ -237,13 +243,27 @@ def format_audits(audits: Sequence[ListingAudit]) -> str:
             )
         notes.extend(_missing_notes(audit))
         if audit.unexpected:
-            notes.append(
-                f"※ {audit.category.code} の台帳に一覧から消えたキーが "
-                f"{len(audit.unexpected):,} 件ある (指定解除を疑う): "
-                + ", ".join(audit.unexpected[:MAX_LISTED])
-            )
+            notes.append(_unexpected_note(audit))
     lines.append("(全国は件数表示、一覧は集めた行、台帳は CSV のキーの異なり数。いずれも指定単位)")
     return "\n".join(lines + notes)
+
+
+def _unexpected_note(audit: ListingAudit) -> str:
+    """余りの読み方は分類で変わる (ADR 0026)。
+
+    展開される分類では 2 件目以降が一覧に出ないので余りは常に出る。ここで
+    「指定解除を疑う」と書くと毎回誤報になる (201 で 571 件)。
+    """
+    count = f"{len(audit.unexpected):,}"
+    if audit.category.expands_to_buildings:
+        return (
+            f"※ {audit.category.code} の台帳に一覧に無いキーが {count} 件ある "
+            "(1 指定が複数行に展開されるぶん。取りこぼしの証拠にはならない)"
+        )
+    return (
+        f"※ {audit.category.code} の台帳に一覧から消えたキーが {count} 件ある "
+        "(指定解除を疑う): " + ", ".join(audit.unexpected[:MAX_LISTED])
+    )
 
 
 def _missing_notes(audit: ListingAudit) -> list[str]:
