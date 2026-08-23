@@ -32,10 +32,22 @@ class AreaScope(Enum):
     """都道府県に加えて地域の 9 区分も option にある。302 / 322 / 312 / 323。"""
 
     REGION = "region"
-    """地域の 9 区分だけ。**都道府県では引けない。** 303 / 313。"""
+    """地域の 9 区分だけ。
+
+    **いまこの軸を使う分類は無い。** 303 / 313 の select には 9 区分が並ぶが、
+    データ側の地域欄は全件空で 1 件も引けなかった (2026-08-23 実測)。
+    option があることと引けることは別なので、語彙としては残す。
+    """
 
     WHOLE = "whole"
-    """地域欄が無い。全国を 1 回で取る。304 (選定保存技術)。"""
+    """地域で分けずに全国を 1 回で取る。
+
+    次の 2 つがここに来る (2026-08-23 実測)。**どちらも全国 CSV が 2,000 件未満**で、
+    504 にならないことを確かめてある。
+
+    - 地域欄そのものが無い … 304 (選定保存技術)
+    - 地域欄はあるが埋まっていない … 303 / 313 / 323 (全件空)、312 (662 件中 18 件が空)
+    """
 
 
 @dataclass(frozen=True)
@@ -107,20 +119,20 @@ DOCUMENTED_INTANGIBLE_FOLK: Final = Category(
     "312",
     "記録作成等の措置を講ずべき無形の民俗文化財",
     662,
-    area_scope=AreaScope.PREFECTURE_AND_REGION,
+    area_scope=AreaScope.WHOLE,
     ledger_id="302",
 )
 
 # 無形文化財。台帳ID は 303。**303 と 313 は都道府県では引けない**。
-INTANGIBLE: Final = Category("303", "重要無形文化財", 100, area_scope=AreaScope.REGION)
+INTANGIBLE: Final = Category("303", "重要無形文化財", 100, area_scope=AreaScope.WHOLE)
 REGISTERED_INTANGIBLE: Final = Category(
-    "323", "登録無形文化財", 7, area_scope=AreaScope.PREFECTURE_AND_REGION, ledger_id="303"
+    "323", "登録無形文化財", 7, area_scope=AreaScope.WHOLE, ledger_id="303"
 )
 DOCUMENTED_INTANGIBLE: Final = Category(
     "313",
     "記録作成等の措置を講ずべき無形文化財",
     132,
-    area_scope=AreaScope.REGION,
+    area_scope=AreaScope.WHOLE,
     ledger_id="303",
 )
 
