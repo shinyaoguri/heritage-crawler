@@ -74,6 +74,18 @@ class Category:
     102 だけは 1 指定あたり約 2.5 棟に展開され、単位が違うので比べられない。
     """
 
+    audits_with_listing: bool = True
+    """検索結果一覧のキーが台帳のキーに載るか (ADR 0026)。
+
+    載るなら「一覧にあって台帳に無い」を取りこぼしとして名指しでき、一覧から回収
+    できる (``listing.audit_listing``)。**展開の有無とは別の性質。** 201 は 1 指定が
+    複数の件に展開されるが、一覧の行はその 1 件目へ直接リンクしていて、キーは台帳に
+    載る (2026-08-24 に全 110 ページで実測)。
+
+    載らない分類では逆に、台帳にある正しいキーが「取りこぼし」に化けるので、
+    通信する前に断る。
+    """
+
     area_scope: AreaScope = AreaScope.PREFECTURE
     """検索の分割軸 (``search_areas`` が実際の地域に開く)。"""
 
@@ -95,7 +107,16 @@ class Category:
 
 # 有形文化財 (建造物)
 REGISTERED: Final = Category("101", "登録有形文化財（建造物）", 14748)
-DESIGNATED: Final = Category("102", "国宝・重要文化財（建造物）", 2633, expands_to_buildings=True)
+# 102 の一覧は全 27 ページ辿っても 1,907 行しか読めない (件数表示は 2,633)。
+# 複数棟の指定は詳細ページへ直接リンクされず、棟一覧のモーダルになるため
+# (2026-08-24 実測)。網羅性の担保に使えないので通信する前に断る。
+DESIGNATED: Final = Category(
+    "102",
+    "国宝・重要文化財（建造物）",
+    2633,
+    expands_to_buildings=True,
+    audits_with_listing=False,
+)
 
 # 有形文化財 (美術工芸品)。台帳ID は 201 に 201 / 211 が同居する。
 FINE_ARTS: Final = Category(

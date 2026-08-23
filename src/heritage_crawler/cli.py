@@ -454,9 +454,9 @@ def _run_audit(
     categories: Sequence[Category],
     areas: Sequence[Area] | None,
 ) -> int:
-    """一覧を全ページ辿って台帳と突き合わせる (ADR 0017)。
+    """一覧を全ページ辿って台帳と突き合わせる (ADR 0017 / ADR 0026)。
 
-    棟に展開される分類は突き合わせられないので飛ばす。1 件でも取りこぼしが
+    一覧のキーが台帳のキーに載らない分類は飛ばす。1 件でも取りこぼしが
     残っていれば異常終了する — 気付かずに次の工程へ進まないため。
     """
     client = PoliteClient(contact=args.contact, interval=args.interval, timeout=args.timeout)
@@ -465,8 +465,8 @@ def _run_audit(
     recovered = 0
     try:
         for category in categories:
-            if category.expands_to_buildings:
-                logger.info("%s は棟に展開されるため一覧とは突き合わせられない", category.code)
+            if not category.audits_with_listing:
+                logger.info("%s の一覧のキーは台帳のキーに載らないので飛ばす", category.code)
                 continue
             audit = audit_listing(cache, fetch_listing(client, session, category), areas)
             audits.append(audit)
@@ -480,7 +480,7 @@ def _run_audit(
         return 1
 
     if not audits:
-        logger.error("突き合わせられる分類が無い (棟に展開されない分類を --category で選ぶ)")
+        logger.error("突き合わせられる分類が無い (102 以外の分類を --category で選ぶ)")
         return 1
 
     print(format_audits(audits))
