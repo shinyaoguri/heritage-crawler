@@ -286,7 +286,11 @@ push 用の GitHub App の secret まで入っている。**push まで含む本
 - 既定の `data` は gitignore 済み。**ローカルではここからデータリポジトリ群
   (`~/Repos/bunkazai`) へ symlink を張ってある** ので、クローラーの手元から
   データを辿れて `--output-dir` も要らない。symlink も追跡されないため、
-  データリポジトリは別リポジトリのまま (submodule にはしない)
+  データリポジトリは別リポジトリのまま (submodule にはしない)。
+  **worktree にはこの symlink が無い** — 追跡されていないものは worktree に
+  複製されないので、そのまま `build-records` を走らせると worktree の中に
+  59 MB を書き出して**データリポジトリには 1 バイトも届かない**。worktree で
+  出力を作るときは `ln -s ~/Repos/bunkazai data` を先に張る
 - **各データリポジトリのルートに `meta.json` を書く** (ADR 0014)。出典表記と
   **利用日**・表示名・語彙・件数を機械可読で持つ。利用日は詳細を取得した日
   (`DetailEntry.fetched_at` の最大値) を**日本時間で切る** — 組み立てを走らせた日
