@@ -387,9 +387,11 @@ gh workflow run weekly.yml -f dry-run=true
   配信と配布は heritages 側の保険 cron が拾う。赤にすると**取得そのものが止まった
   週と見分けが付かなくなる**ので、README の件数表と同じく Issue に残すだけにする
   (サイトの「最終確認」は古いままになるので、その旨も Issue に書く)
-- 台帳の取り直しには `audit-listing --recover` を挟む。**都道府県が空の行は
+- 台帳の取り直しには `audit-listing --recover` を挟む。**分割軸の欄が空の行は
   どの地域でも引けず**、一覧から回収しないと網羅性が確かめられない
-  ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md))。
+  ([ADR 0017](docs/decisions/0017-audit-completeness-with-the-search-listing.md) /
+  [ADR 0026](docs/decisions/0026-audit-with-the-listing-where-its-keys-are-ledger-keys.md)。
+  401 に 1 件、201 に 92 件実在する)。
   **CSV が 1 バイトも動いていない週は走らせない** (回収ぶんは artifact に残っている)
 - **相手先が 504 を返す時間帯がある** (1 req/s を守っていても起きる)。取得は
   `scripts/retry.sh` で 5 分空けて繰り返す。60 秒の不調で 1 週ぶんの更新を
