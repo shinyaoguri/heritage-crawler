@@ -16,7 +16,7 @@ name: 週次の差分更新
 # 中身が動かなかったリポジトリには `status.json` だけのコミットが 1 つ立つ。
 #
 # 必要な secret は 2 つ。code4heritage org の GitHub App で、**対象 10 リポジトリに
-# contents:write**、**heritages に actions:write と Variables の書き込み**を与える。
+# contents:write**、**heritages に actions:write** を与える。
 #
 # - DATA_PUSH_CLIENT_ID   … App の Client ID
 # - DATA_PUSH_PRIVATE_KEY … App の秘密鍵 (PEM のまま)
@@ -278,9 +278,9 @@ jobs:
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # **確認した日を heritages へも渡す。** データリポジトリの `status.json` と
-      # 同じ日付で (ADR 0023)、こちらはサイトの「最終確認」になる。変数に残すのは、
-      # サイトのコードを直しただけの回にも表示を保つため。
+      # **押したぶんを配信させる。** 確認日はここでは渡さない — サイトは各データ
+      # リポジトリの `status.json` から読む (ADR 0028)。**押すのが先、起こすのが後**
+      # という順序だけが要件になる。
       # **サイト側へは別のトークンを使う。** データリポジトリへ押すトークンに
       # `actions: write` を乗せない — App が持つ権限をそのまま配らず、行き先と
       # 用途で絞る。ここでも取り直すので期限切れの心配も無い。
@@ -299,8 +299,10 @@ jobs:
           private-key: ${{ secrets.DATA_PUSH_PRIVATE_KEY }}
           owner: code4heritage
           repositories: heritages
+          # **これ 1 つで足りる。** 確認日を変数に書いていた頃は Variables の
+          # 書き込みも要ったが、`actions/create-github-app-token` には variables を
+          # 絞って要求する入力が無く、書いても無視されたまま発行が落ちていた (#94)。
           permission-actions: write # deliver.yml を起こす
-          permission-variables: write # 確認日を残す
 
       - name: サイトと配布物を起こす
         id: site
@@ -310,11 +312,8 @@ jobs:
           GH_TOKEN: ${{ steps.site-token.outputs.token }}
         run: |
           set -euo pipefail
-          today=$(TZ=Asia/Tokyo date +%Y-%m-%d)
-          gh variable set LAST_CHECKED_DATE --repo code4heritage/heritages --body "$today"
-          gh workflow run deliver.yml --repo code4heritage/heritages \
-            --field "checked-date=${today}"
-          echo "heritages を起こした (確認日 ${today})" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh workflow run deliver.yml --repo code4heritage/heritages
+          echo "heritages を起こした" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # 押すところまでは終わっているので、**何が残っているか**を書く。
       # 「失敗した」だけでは、翌週まで放っておいてよいのか手で起こすべきかが読めない。
@@ -336,18 +335,18 @@ jobs:
             echo
             echo "- **データリポジトリは更新済み** (確認日 ${today}。中身が変わった" \
                  "${CHANGED:-?} / 確認のみ ${CHECKED:-?})。行が消えることはない"
-            echo "- **サイトの「最終確認」は古いまま。** 配信と配布は heritages 側の"
-            echo "  保険 cron (毎週月曜 08:00 JST) が拾うが、そちらには確認日が渡らない"
+            echo "- **サイトへの反映が遅れるだけ。** 配信と配布は heritages 側の保険 cron"
+            echo "  (毎週月曜 08:00 JST) が拾い、**確認日はデータから読む**ので"
+            echo "  (ADR 0028)、そちらで拾われた回も表示は正しくなる"
             echo
             echo "手で起こすなら:"
             echo
             echo '```'
-            echo "gh variable set LAST_CHECKED_DATE --repo code4heritage/heritages --body ${today}"
-            echo "gh workflow run deliver.yml --repo code4heritage/heritages --field checked-date=${today}"
+            echo "gh workflow run deliver.yml --repo code4heritage/heritages"
             echo '```'
             echo
             echo "トークンの発行で落ちているなら、GitHub App の Permissions を見る"
-            echo "(heritages に \`actions: write\` と Variables の書き込みが要る)。"
+            echo "(heritages に \`actions: write\` が要る)。"
             echo
             echo "実行: ${RUN_URL}"
           } >site-body.md

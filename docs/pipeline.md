@@ -67,7 +67,7 @@ flowchart TD
     DB -.->|"読む"| L
     DB -.->|"読む"| F
     B -->|"確認日と、変わったぶんを push"| J
-    B -->|"確認日を渡して起こす"| C
+    B -->|"押し終えてから起こす"| C
     J -->|"clone"| C
     P --> PG
     A --> AZ
@@ -84,7 +84,7 @@ flowchart TD
 | | crawler | 前回の台帳と**バイト単位**で比べ、違ったファイルの行だけキーで突き合わせる。CSV が動いた週だけ `audit-listing --recover` を挟む |
 | | crawler | **2 段目**。新規・値が変わったぶん・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
 | | crawler | 行を組み立て、**確認日 (`status.json`) と変わったぶん**を commit して push ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。中身が動かなかったリポジトリは「確認 (差分なし)」のコミットが 1 つ立つ |
-| | crawler | heritages に確認日を渡し (`LAST_CHECKED_DATE`)、`deliver.yml` を起こす |
+| | crawler | heritages の `deliver.yml` を起こす。**確認日は渡さない** — サイトが `status.json` から読む ([ADR 0028](decisions/0028-read-the-checked-date-from-the-data.md)) |
 | 月 03:20 頃 | heritages | 起こされて `deliver.yml` が走る。10 リポジトリを clone し、**配ってよいデータか確かめる**。通ったら配信と配布へ |
 | | heritages | サイトを組み立てて Pages へ。前回の配布物と比べて変更履歴を書き、**行が動いた回だけ**リリースを立てる |
 | 月 08:00 | heritages | **保険の cron。**起こされなかった週 (クローラーが転んだ・dispatch が届かなかった) はここで拾う |
@@ -103,17 +103,19 @@ flowchart TD
 | データリポジトリのリリース | **heritages** | 種別ごとの ZIP + 変更履歴 ([ADR 0019](decisions/0019-distribute-archives-through-releases.md)) | 行が動いた回 |
 | heritages のリリース | heritages | 全部入り ZIP + `MANIFEST.json` | 同上 |
 | heritages の Pages | heritages | 閲覧サイト | 走るたび |
-| heritages の変数 `LAST_CHECKED_DATE` | **crawler** | **確認日** | 毎週 |
 
 **日付が 2 つあり、意味が違う。**混同すると「止まっているのに気付かない」か
 「正常なのに警報が鳴る」のどちらかになる。
 
 - **利用日** (`meta.json` の `accessed_date`) … そのデータを**取り出した**日。
   上流が変わらなければ古いままで、それが正常
-- **確認日** (`status.json` の `checked_date`、および `LAST_CHECKED_DATE`) …
-  データベースを**見にいった**最後の日。クローラーしか知らないので、毎週書いて渡す。
-  **同じ日付が 2 か所に出る** — データリポジトリを単独で受け取った人はサイトを
-  見ないため ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))
+- **確認日** (`status.json` の `checked_date`) … データベースを**見にいった**
+  最後の日。クローラーしか知らないので毎週書く。**置き場は `status.json` 1 つ**で、
+  サイトの「最終確認」もそこから読む ([ADR 0028](decisions/0028-read-the-checked-date-from-the-data.md))
+  — データリポジトリを単独で受け取った人はサイトを見ないので、来歴はデータと
+  一緒に旅する ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。
+  サイトが採るのは**一番古い日**で、どれか 1 つへの push が落ちた週に
+  「全部確かめた」と読めてしまわないようにしてある
 
 ## どこで何を確かめるか
 
