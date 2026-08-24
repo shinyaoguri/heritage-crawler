@@ -1,0 +1,44 @@
+name: PR policy
+
+# CI (ci.yml) から切り出した。PR タイトルを検査する都合で edited を拾う必要が
+# あるが、ci.yml でそれを拾うと**タイトルを直すたびに Python の matrix 3 本が
+# 丸ごと再走する**。タイトルの変更で走らせたいのはこちらだけなので、
+# ワークフローを分けて edited をこちらにだけ置く。
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # マージ前に満たすべき条件のうち Python に依らないもの。squash merge では PR
+  # タイトルがそのまま main のコミットメッセージになるため形式を強制し、あわせて
+  # ドキュメントの参照ドリフトも見る (定期実行を待たず PR の時点で潰す)。
+  #
+  # ジョブ名は ruleset の required status check の名前そのものなので変えない。
+  pr-policy:
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 判定スクリプト自体のテスト
+        run: |
+          ./scripts/test-check-pr-title.sh
+          ./scripts/test-check-freshness.sh
+          ./scripts/test-retry.sh
+          ./scripts/test-report-issue.sh
+          ./scripts/test-push-data-repos.sh
+
+      - name: PR タイトルの Conventional Commits lint
+        run: ./scripts/check-pr-title.sh
+
+      # gh を渡さないので Issue の状態は見ない (リポ内部の整合性だけを検査する)。
+      - name: ドキュメントの参照ドリフト検査
+        run: ./scripts/check-freshness.sh

@@ -315,13 +315,20 @@ pytest -q
 ./scripts/check-freshness.sh
 ```
 
-CI ではこれを Python 3.12 / 3.13 / 3.14 のマトリクスで実行し、あわせて
-`scripts/check-pr-title.sh` で PR タイトルの Conventional Commits 形式を
-(squash merge でタイトルがそのまま main のコミットメッセージになるため)、
-`scripts/check-freshness.sh` でドキュメントの参照ドリフト (ADR の連番と 4 節構成、
-本文が参照する ADR 番号・リポ内パス・Issue) を検査する。判定スクリプト自体の
-テストも同じジョブで回す。参照ドリフトは `.github/workflows/freshness.yml` で
-月次にも検査する — Issue の状態はコミット無しに変わるため。
+CI (`.github/workflows/ci.yml`) ではこれを Python のマトリクスで実行する。
+**PR では最小サポートの 3.12 だけ、main への push では 3.12 / 3.13 / 3.14 の 3 本**
+— Actions の課金はジョブ単位の分切り上げで、20 秒で終わるこのジョブに 3 本 × 1 分が
+引かれていたため。バージョン差は main への push と週次 (`weekly.yml`) で見る。
+
+PR タイトルとドキュメントの検査は `.github/workflows/pr-policy.yml` が受け持つ。
+`scripts/check-pr-title.sh` で Conventional Commits 形式を (squash merge でタイトルが
+そのまま main のコミットメッセージになるため)、`scripts/check-freshness.sh` で
+ドキュメントの参照ドリフト (ADR の連番と 4 節構成、本文が参照する ADR 番号・
+リポ内パス・Issue) を検査する。判定スクリプト自体のテストも同じジョブで回す。
+**CI と分けてあるのは、PR タイトルの検査だけが `edited` を拾う必要があるから** —
+ci.yml で拾うとタイトルを直すたびに matrix が丸ごと再走する。参照ドリフトは
+`.github/workflows/freshness.yml` で月次にも検査する — Issue の状態はコミット無しに
+変わるため。
 
 **CI からデータベースへアクセスするテストは置かない。** 外部サイトに依存する
 テストは不安定なうえ、相手先に不要な負荷をかける。
