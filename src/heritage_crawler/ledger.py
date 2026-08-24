@@ -419,8 +419,10 @@ def fetch_ledgers(
 ) -> LedgerRun:
     """分類 × 地域を順に取得する。取得済みは飛ばす (``force`` で取り直す)。
 
-    分類ごとに全国件数も取り直す。1 分類あたり 1 リクエストで、地域合計との
-    差が取りこぼしと重複の両方を教えてくれる (``summarize``)。
+    分類ごとに全国件数も取る。1 分類あたり 1 リクエストで、地域合計との差が
+    取りこぼしと重複の両方を教えてくれる (``summarize``)。**これも「取得済みは
+    飛ばす」の対象**で、数え直すのはまだ取れていない分類だけ (ADR 0027) —
+    取れているものを叩き直すと、そこで新しく失敗しうる。
 
     **1 つ取れなくても止めない** (ADR 0022)。記録して次へ進み、取れなかったぶんは
     ``LedgerRun.failures`` に載る。取れたぶんはキャッシュに入るので、同じコマンドを
@@ -430,16 +432,19 @@ def fetch_ledgers(
     session = Session(fetcher)
     run = LedgerRun()
     for category in categories:
-        try:
-            count = fetch_whole_count(fetcher, session, category, sleep=sleep)
-        except (FetchError, LedgerError, ParseError) as error:
-            # 全国件数はキャッシュを上書きしないだけ。毎回数え直すので次の回で拾える。
-            run.failed(f"{category.code} の全国件数", error, limit=failure_limit)
+        if force or not cache.has_whole_count(category):
+            try:
+                count = fetch_whole_count(fetcher, session, category, sleep=sleep)
+            except (FetchError, LedgerError, ParseError) as error:
+                # 記録が残らないだけ。次の回が数え直しに来る。
+                run.failed(f"{category.code} の全国件数", error, limit=failure_limit)
+            else:
+                cache.record_whole_count(category, count)
+                run.succeeded()
+            if run.abort_reason:
+                return run
         else:
-            cache.record_whole_count(category, count)
-            run.succeeded()
-        if run.abort_reason:
-            return run
+            logger.debug("取得済みのため飛ばす: %s の全国件数", category.code)
 
         for area in areas_for(category, areas):
             if not force and cache.is_done(category, area):
