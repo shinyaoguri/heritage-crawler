@@ -267,7 +267,7 @@ def test_1_地域が取れなくても残りを取りに行く(cache_dir: Path) 
 
 
 def test_全国件数が取れなくても地域は取りに行く(cache_dir: Path) -> None:
-    """全国件数は毎回数え直すので、キャッシュを上書きしないだけで次の回に拾える。"""
+    """全国件数が無いのは網羅性を判定できないだけ。地域の取得は最後まで進む。"""
     cache = LedgerCache(cache_dir)
     run = fetch_ledgers(
         broken_fetcher(""), cache, [CATEGORY], [HOKKAIDO], sleep=NO_WAIT
@@ -276,6 +276,38 @@ def test_全国件数が取れなくても地域は取りに行く(cache_dir: Pa
     assert run.failures == ["102 の全国件数"]
     assert cache.entries["102/01-hokkaido"].row_count == 85
     assert summarize(cache, [CATEGORY], [HOKKAIDO])[0].whole_count is None
+
+
+def test_全国件数も取得済みなら数え直さない(cache_dir: Path) -> None:
+    """取れているものを叩き直すと、そこで新しく失敗しうる (ADR 0027)。
+
+    2026-08-23 の週次実行がそうなった。3 回目の試行で台帳の CSV は全 19 分類ぶん
+    揃ったのに、毎回叩き直していた 101 の全国件数だけが取れず、それだけで
+    fetch-ledger が 1 を返して 1 週ぶんの更新が飛んだ (Issue #92)。
+    """
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(make_fetcher(), cache, [CATEGORY], [HOKKAIDO])
+
+    # 全国件数が壊れる相手でも、取り直しに行かないので影響を受けない
+    resumed = broken_fetcher("")
+    run = fetch_ledgers(resumed, cache, [CATEGORY], [HOKKAIDO, TOKYO], sleep=NO_WAIT)
+
+    assert run.ok
+    assert [dict(sent)["seat_pref"] for _, url, sent in resumed.calls if url == SEARCH_URL] == [
+        TOKYO.name
+    ]
+    assert cache.whole_counts[CATEGORY.code] == WHOLE_COUNT
+
+
+def test_全国件数が取れなかった回の次は数え直す(cache_dir: Path) -> None:
+    """飛ばしてよいのは取れているものだけ。取れなかった回は次が拾いに行く。"""
+    cache = LedgerCache(cache_dir)
+    fetch_ledgers(broken_fetcher(""), cache, [CATEGORY], [HOKKAIDO], sleep=NO_WAIT)
+
+    run = fetch_ledgers(make_fetcher(), cache, [CATEGORY], [HOKKAIDO])
+
+    assert run.ok
+    assert cache.whole_counts[CATEGORY.code] == WHOLE_COUNT
 
 
 def test_続けて失敗したら打ち切って残りを叩かない(cache_dir: Path) -> None:
@@ -296,8 +328,8 @@ def test_中断しても取得済みをやり直さない(cache_dir: Path) -> No
 
     resumed = make_fetcher()
     fetch_ledgers(resumed, cache, [CATEGORY], [HOKKAIDO, TOKYO])
-    # 取り直すのは未取得の東京都だけ。全国件数は毎回数え直す (網羅性の基準のため)。
-    assert resumed.urls() == [INDEX_URL, SEARCH_URL, SEARCH_URL]
+    # 取り直すのは未取得の東京都だけ (全国件数も取得済みなら飛ばす。ADR 0027)。
+    assert resumed.urls() == [INDEX_URL, SEARCH_URL]
     assert resumed.calls[-1][2][-1] == ("seat_pref", "東京都")
 
 

@@ -111,6 +111,13 @@ class LedgerCache:
         self.whole_counts[category.code] = hit_count
         self._save()
 
+    def has_whole_count(self, category: Category) -> bool:
+        """再開時に数え直さなくてよいか (ADR 0027)。
+
+        CSV と違って実体のファイルは無いので、マニフェストの記録がすべて。
+        """
+        return category.code in self.whole_counts
+
     def is_done(self, category: Category, area: Area) -> bool:
         """再開時に飛ばしてよいか。
 
