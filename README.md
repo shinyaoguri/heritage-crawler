@@ -399,8 +399,9 @@ gh workflow run weekly.yml -f dry-run=true
 
 push 先が別リポジトリなので `GITHUB_TOKEN` では足りない。`code4heritage` org に
 GitHub App を作り、**対象の 10 リポジトリ**に `contents: write` を、
-**`heritages`** に `actions: write` と Variables の書き込みを与えて、secret を
-2 つ登録する (heritages を起こして確認日を渡すため)。
+**`heritages`** に `actions: write` を与えて、secret を 2 つ登録する
+(押し終えてから heritages を起こすため。**確認日は渡さない** —
+[ADR 0028](docs/decisions/0028-read-the-checked-date-from-the-data.md))。
 
 | secret | 中身 |
 |---|---|
