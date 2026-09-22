@@ -26,7 +26,7 @@ git config --global url."$work/remotes/".insteadOf \
   "https://x-access-token:dummy@github.com/code4heritage/"
 
 mkdir -p "$work/remotes" "$work/data"
-for repo in changed-repo checked-repo untouched-repo; do
+for repo in changed-repo issues-repo checked-repo untouched-repo; do
   git init --quiet --bare "$work/remotes/${repo}.git"
   git clone --quiet "$work/remotes/${repo}.git" "$work/data/${repo}" 2>/dev/null
   dir="$work/data/${repo}"
@@ -38,11 +38,14 @@ for repo in changed-repo checked-repo untouched-repo; do
   git -C "$dir" commit --quiet -m "先週まで"
   git -C "$dir" push --quiet origin main
 done
-printf 'changed-repo\nchecked-repo\nuntouched-repo\n' >"$work/repos.txt"
+printf 'changed-repo\nissues-repo\nchecked-repo\nuntouched-repo\n' >"$work/repos.txt"
 
-# 今週の状態。中身が動いた / 確認日だけ動いた / 何も動いていない、の 3 通り。
+# 今週の状態。中身が動いた / 不具合の一覧だけ動いた / 確認日だけ動いた /
+# 何も動いていない、の 4 通り。
 echo '{"checked_date":"2026-08-22"}' >"$work/data/changed-repo/status.json"
 echo '{"ledger_id":"401","managed_id":"2"}' >>"$work/data/changed-repo/data/13_tokyo.jsonl"
+echo '{"checked_date":"2026-08-22"}' >"$work/data/issues-repo/status.json"
+echo '{"ledger_id":"401","managed_id":"1","kind":"stale"}' >"$work/data/issues-repo/source-issues.jsonl"
 echo '{"checked_date":"2026-08-22"}' >"$work/data/checked-repo/status.json"
 
 export GH_TOKEN=dummy BOT="tester[bot]" RUN_URL="https://example.invalid/run/1"
@@ -70,17 +73,20 @@ check "中身が動いた回" "chore(data): 2026-08-22 の差分を反映" \
   "$(git -C "$work/remotes/changed-repo.git" log -1 --format='%s' main)"
 check "確認だけの回" "chore(data): 2026-08-22 に確認 (差分なし)" \
   "$(git -C "$work/remotes/checked-repo.git" log -1 --format='%s' main)"
+# 不具合の一覧 (ADR 0030) が動いた回を「差分なし」と書かない
+check "不具合の一覧だけ動いた回" "chore(data): 2026-08-22 の差分を反映" \
+  "$(git -C "$work/remotes/issues-repo.git" log -1 --format='%s' main)"
 
 # 何も動いていないリポジトリは押さない (確かめていないのに確認日を進めない)
 check "触れていないリポジトリ" "先週まで" \
   "$(git -C "$work/remotes/untouched-repo.git" log -1 --format='%s' main)"
 
 # 数が出力に出る (#67: パイプラインのサブシェルで数えていたころは常に 0 だった)
-check "changed の出力" "changed=1" "$(grep '^changed=' "$GITHUB_OUTPUT")"
+check "changed の出力" "changed=2" "$(grep '^changed=' "$GITHUB_OUTPUT")"
 check "checked の出力" "checked=1" "$(grep '^checked=' "$GITHUB_OUTPUT")"
 
 # まとめの文言も同じ数を言う
-if ! echo "$summary" | grep -q "中身が変わったリポジトリ: 1 / 確認のみ: 1"; then
+if ! echo "$summary" | grep -q "中身が変わったリポジトリ: 2 / 確認のみ: 1"; then
   echo "NG: まとめの数が合わない" >&2
   echo "$summary" >&2
   failed=1

@@ -4,7 +4,8 @@
 # **中身が動いたかと、確かめたかを分けて数える。** `status.json` の確認日は毎週
 # 動くので (ADR 0023)、それも「更新」に数えると全部が更新に見え、静かな週と
 # データが動いた週を区別できなくなる。中身が動いたかは `data` / `meta.json` /
-# `removed.jsonl` の差分で見て、コミットメッセージも分ける。
+# `removed.jsonl` / `source-issues.jsonl` (ADR 0030) の差分で見て、コミット
+# メッセージも分ける。
 #
 # 何も動いていないリポジトリは押さない。`status.json` すら動いていないのは
 # `update-records` がそのリポジトリに触れていない (分類や地域を絞った実行) ときで、
@@ -77,7 +78,7 @@ while read -r repo; do
     continue
   fi
 
-  if git -C "$dir" diff --cached --quiet -- data meta.json removed.jsonl; then
+  if git -C "$dir" diff --cached --quiet -- data meta.json removed.jsonl source-issues.jsonl; then
     message="chore(data): ${today} に確認 (差分なし)"
     note="- ${repo}: 確認のみ"
     kind=checked
