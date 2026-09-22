@@ -177,6 +177,21 @@ class DetailEntry:
 
     error: str = ""
 
+    issue: str = ""
+    """データベース側の不具合の種類 (ADR 0030)。無ければ空。
+
+    ``ok`` が真でも立ちうる — ``ISSUE_TRUNCATED`` は、相手が 5xx を返しながら
+    途中まで描いた詳細ページを保存したもの。取れたのは切れた位置の手前までで、
+    その後ろにある項目 (関連情報・附指定などの一覧・写真) は取れていない。
+    """
+
+    http_status: int = 0
+    """相手が返した HTTP ステータス。正常 (200) と応答が無かったときは 0。"""
+
+
+ISSUE_TRUNCATED: Final = "truncated"
+"""相手が 5xx を返しながら、詳細ページを途中まで描いた (#107 / ADR 0030)。"""
+
 
 def detail_key(category_code: str, kanri_taishou_id: str) -> str:
     return f"{category_code}/{kanri_taishou_id}"
@@ -274,6 +289,14 @@ class DetailCache:
     def failures(self) -> list[DetailEntry]:
         """取得に失敗したまま残っているもの。同じキーは最後の結果で判断する。"""
         return [entry for entry in self.entries.values() if not entry.ok]
+
+    def issues(self) -> list[DetailEntry]:
+        """取れはしたが、データベース側の不具合で欠けているもの (ADR 0030)。
+
+        ``failures`` とは分けてある。取得済み (``is_done`` が真) なので再開では
+        飛ばされ、拾い直すには明示して取り直す必要がある。
+        """
+        return [entry for entry in self.entries.values() if entry.ok and entry.issue]
 
     def record(self, entry: DetailEntry, html: bytes | None = None) -> None:
         """HTML を保存し、マニフェストへ 1 行書き足す。並列で呼んでよい。"""

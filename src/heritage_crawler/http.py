@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from collections.abc import Callable, Sequence
 from http.cookiejar import CookieJar
 from importlib import metadata
@@ -53,7 +54,20 @@ HTML から取り出した並びのまま送るのが安全なため (ADR 0002)�
 
 
 class FetchError(RuntimeError):
-    """取得に失敗した。再試行しても回復しなかった場合を含む。"""
+    """取得に失敗した。再試行しても回復しなかった場合を含む。
+
+    相手が HTTP のエラーで答えたときは、最後の応答のステータスと本文を持つ。
+    **5xx の本文が途中まで描かれた詳細ページのことがある** (#107 / ADR 0030)。
+    使えるかどうかを決めるのは呼び手で、ここは捨てずに渡すだけ。
+    """
+
+    def __init__(self, message: str, *, status: int = 0, body: bytes = b"") -> None:
+        super().__init__(message)
+        self.status = status
+        """最後の応答の HTTP ステータス。応答が無かった (タイムアウトなど) なら 0。"""
+
+        self.body = body
+        """最後の応答の本文 (gzip は展開済み)。"""
 
 
 class Fetcher(Protocol):
@@ -177,20 +191,25 @@ class PoliteClient:
         # 1 ページ 35 KB が約 9 KB になる。相手の転送量が減る (ADR 0010)。
         request.add_header("Accept-Encoding", "gzip")
         last_error: Exception | None = None
+        status, body = 0, b""
         for attempt in range(1, self._retries + 1):
             self._limiter.wait()
             try:
                 with self._opener.open(request, timeout=self._timeout) as response:
                     return _decoded(response)
             except urllib.error.HTTPError as error:
-                error.close()
+                status, body = error.code, _error_body(error)
                 # 4xx はこちらの組み立てが誤っている。繰り返しても同じなので即座に諦める。
                 if error.code < 500:
                     raise FetchError(
-                        f"{request.method} {request.full_url} が {error.code} を返した"
+                        f"{request.method} {request.full_url} が {error.code} を返した",
+                        status=status,
+                        body=body,
                     ) from error
                 last_error = error
             except (urllib.error.URLError, TimeoutError, OSError) as error:
+                # 応答が無かった試行。前の試行の本文を最後の応答として持ち越さない。
+                status, body = 0, b""
                 last_error = error
             if attempt < self._retries:
                 backoff = RETRY_BACKOFF * 2**attempt
@@ -205,5 +224,17 @@ class PoliteClient:
                 )
                 self._sleep(backoff)
         raise FetchError(
-            f"{request.method} {request.full_url} が {self._retries} 回とも失敗した"
+            f"{request.method} {request.full_url} が {self._retries} 回とも失敗した",
+            status=status,
+            body=body,
         ) from last_error
+
+
+def _error_body(error: urllib.error.HTTPError) -> bytes:
+    """エラー応答の本文を読んで閉じる。読めなければ空。"""
+    try:
+        return _decoded(error)
+    except (OSError, EOFError, zlib.error):
+        return b""
+    finally:
+        error.close()
