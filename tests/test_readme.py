@@ -2,13 +2,15 @@
 
 **外部へは出ない。** 偽のデータリポジトリを ``tmp_path`` に組み立てて走査させる。
 
-ここで守りたいのは 3 つ。
+ここで守りたいのは 4 つ。
 
 - **行数の合計を取得対象と取り違えない** — 401 の複合指定は 2 つのリポジトリに
   同じ行が出る (ADR 0012)
 - **半端な状態から生成しない** — ``meta.json`` と JSON Lines が食い違ったり
   リポジトリが欠けていたら、表を作らずに止まる
 - **差し込み口の外側を動かさない** — README の本文は人が書いたもの
+- **README の出力先の表が ``TARGET_DATASETS`` と一致している** — ここだけは
+  ``tmp_path`` ではなく**リポジトリの README そのもの**を読む (Issue #102)
 """
 
 from __future__ import annotations
@@ -21,16 +23,19 @@ import pytest
 from heritage_crawler.catalog import MONUMENTS, REGISTERED, TARGET_CATEGORIES, TARGET_DATASETS
 from heritage_crawler.readme import (
     BEGIN_MARKER,
+    DATASETS_BEGIN_MARKER,
     END_MARKER,
     CategoryCounts,
     ReadmeError,
     read_counts,
     render_block,
+    render_datasets_block,
     replace_block,
 )
 
 HISTORIC = "historic-sites"
 SCENIC = "special-places-of-scenic-beauty"
+README = Path(__file__).resolve().parent.parent / "README.md"
 
 
 def put_dataset(output_dir: Path, repo: str, keys: list[tuple[str, str]], records: int) -> None:
@@ -51,7 +56,7 @@ def put_dataset(output_dir: Path, repo: str, keys: list[tuple[str, str]], record
 
 
 def put_all(output_dir: Path, extra: dict[str, list[tuple[str, str]]] | None = None) -> None:
-    """全 10 リポジトリを埋める。``extra`` を渡したリポジトリだけ行を持つ。"""
+    """全データリポジトリを埋める。``extra`` を渡したリポジトリだけ行を持つ。"""
     rows = extra or {}
     for dataset in TARGET_DATASETS:
         keys = rows.get(dataset.repo, [])
@@ -189,3 +194,61 @@ def test_対応表に無いリポジトリは走査しない(tmp_path: Path) -> 
 
     counts = {item.category.code: item.rows for item in read_counts(tmp_path)}
     assert counts["401"] == 1
+
+
+def test_README_の出力先の表は_TARGET_DATASETS_と一致する() -> None:
+    """**この 1 本が Issue #102 の再発防止。**
+
+    分類が 4 から 19 へ増えたとき、README の出力先の表は手書きの 10 行のまま
+    取り残された (Issue #100)。生成物にしただけでは足りない — 作り直し忘れを
+    誰かが見ていなければ、静かにずれたままになる。
+
+    件数表の方は書き出したデータ (``data``) を読むので CI では確かめようがなく、
+    週次の ``render-readme --check`` に頼るしかない。**出力先の表は
+    ``TARGET_DATASETS`` だけで決まる**ので、ここで突き合わせられる。
+    ``TARGET_DATASETS`` に手を入れて README を作り直し忘れた PR は、この
+    テストが赤くする。
+    """
+    text = README.read_text(encoding="utf-8")
+    _, opened, rest = text.partition(DATASETS_BEGIN_MARKER)
+    assert opened, f"README に差し込み口 {DATASETS_BEGIN_MARKER} が無い"
+    body, closed, _ = rest.partition(END_MARKER)
+    assert closed, f"README に差し込み口の閉じ {END_MARKER} が無い"
+
+    assert opened + body + closed == render_datasets_block(), (
+        "README の出力先の表が TARGET_DATASETS とずれている。"
+        "heritage-crawler render-readme で作り直す"
+    )
+
+
+def test_出力先の表はデータを読まずに全リポジトリを並べる() -> None:
+    """``catalog`` だけで決まる — だから ``data`` の無い CI でも作れる。"""
+    rows = render_datasets_block().splitlines()[3:-1]
+
+    assert len(rows) == len(TARGET_DATASETS)
+    assert rows[0] == "| `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） |"
+    # 同じ分類が 2 つのリポジトリに分かれることがある (102 の国宝・重文区分)
+    assert "| `national-treasures` | 102 国宝（建造物） |" in rows
+    assert "| `important-cultural-properties` | 102 重要文化財（建造物） |" in rows
+
+
+def test_差し込み口は開きで選ぶ() -> None:
+    """閉じが共通なので、2 つの表を取り違えないことを確かめる。"""
+    text = (
+        f"{BEGIN_MARKER}\n件数表\n{END_MARKER}\n\n"
+        f"{DATASETS_BEGIN_MARKER}\n出力先\n{END_MARKER}\n"
+    )
+
+    counts = replace_block(text, f"{BEGIN_MARKER}\n新しい件数表\n{END_MARKER}")
+    assert counts == (
+        f"{BEGIN_MARKER}\n新しい件数表\n{END_MARKER}\n\n"
+        f"{DATASETS_BEGIN_MARKER}\n出力先\n{END_MARKER}\n"
+    )
+
+    datasets = replace_block(
+        text, f"{DATASETS_BEGIN_MARKER}\n新しい出力先\n{END_MARKER}", DATASETS_BEGIN_MARKER
+    )
+    assert datasets == (
+        f"{BEGIN_MARKER}\n件数表\n{END_MARKER}\n\n"
+        f"{DATASETS_BEGIN_MARKER}\n新しい出力先\n{END_MARKER}\n"
+    )

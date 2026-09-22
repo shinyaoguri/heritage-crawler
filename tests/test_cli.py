@@ -21,7 +21,7 @@ from heritage_crawler.catalog import (
 from heritage_crawler.cli import ALL_AREAS, build_parser, main
 from heritage_crawler.detail import Presence
 from heritage_crawler.ledger import LedgerRun
-from heritage_crawler.readme import BEGIN_MARKER, END_MARKER
+from heritage_crawler.readme import BEGIN_MARKER, DATASETS_BEGIN_MARKER, END_MARKER
 from heritage_crawler.status import STATUS_FILENAME, checked_today
 from heritage_crawler.update import ROTATION_SLOTS, rotation_slot
 
@@ -283,7 +283,7 @@ def test_確認日は既定で日本時間の今日になる(cache_dir: Path, tm
 
 
 def test_確認日は日付として読めないと受け取らない(capsys: pytest.CaptureFixture[str]) -> None:
-    """読めない値は 10 リポジトリに残り、次の週まで直せない。"""
+    """読めない値は各データリポジトリに残り、次の週まで直せない。"""
     with pytest.raises(SystemExit):
         build_parser().parse_args(["update-records", "--checked-date", "2026/08/24"])
 
@@ -394,7 +394,11 @@ def test_前回の台帳が無ければ値の変化は見つけられない(
 
 
 def render_fixture(tmp_path: Path) -> tuple[Path, Path]:
-    """`render-readme` を試すための、データ 1 件と差し込み口だけの README。"""
+    """`render-readme` を試すための、データ 1 件と差し込み口だけの README。
+
+    差し込み口は 2 つ置く — 件数表と出力先リポジトリの表。**閉じは共通**なので、
+    取り違えずに書き換えられることもここで見ている。
+    """
     out = tmp_path / "data"
     for dataset in TARGET_DATASETS:
         keys = [{"ledger_id": "103", "managed_id": "16"}] if dataset.category is SELECTED else []
@@ -406,7 +410,11 @@ def render_fixture(tmp_path: Path) -> tuple[Path, Path]:
             json.dumps({"counts": {"records": len(keys)}}), encoding="utf-8"
         )
     readme = tmp_path / "README.md"
-    readme.write_text(f"前書き\n\n{BEGIN_MARKER}\n{END_MARKER}\n\n後書き\n", encoding="utf-8")
+    readme.write_text(
+        f"前書き\n\n{BEGIN_MARKER}\n{END_MARKER}\n\n"
+        f"なか書き\n\n{DATASETS_BEGIN_MARKER}\n{END_MARKER}\n\n後書き\n",
+        encoding="utf-8",
+    )
     return out, readme
 
 
@@ -418,7 +426,9 @@ def test_件数表を書き直す(tmp_path: Path) -> None:
     assert status == 0
     text = readme.read_text(encoding="utf-8")
     assert "| 103 | 重要伝統的建造物群保存地区 | 選定 | 126 | 1 | 1 |" in text
+    assert "| `world-heritage-sites` | 901 世界遺産 |" in text
     assert text.startswith("前書き\n\n")
+    assert "\n\nなか書き\n\n" in text
     assert text.endswith("\n\n後書き\n")
 
 
@@ -431,7 +441,9 @@ def test_ずれていれば_check_は異常終了する(
     status = main(["render-readme", "--output-dir", str(out), "--readme", str(readme), "--check"])
 
     assert status == 1
-    assert "| **計** |" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "| **計** |" in printed
+    assert "| `world-heritage-sites` | 901 世界遺産 |" in printed
     assert BEGIN_MARKER in readme.read_text(encoding="utf-8")
     assert "103" not in readme.read_text(encoding="utf-8")
 
