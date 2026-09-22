@@ -535,6 +535,9 @@ class DetailSummary:
     total: int
     fetched: int
     failed: int
+    truncated: int = 0
+    """取れはしたが、相手の不具合で途中までしか描かれていない数 (ADR 0030)。
+    ``fetched`` にも含む。"""
 
     @property
     def missing(self) -> int:
@@ -549,15 +552,17 @@ class DetailSummary:
 def summarize_details(cache: DetailCache, targets: Sequence[Target]) -> DetailSummary:
     fetched = 0
     failed = 0
+    truncated = 0
     for target in targets:
         entry = cache.entries.get(target.key)
         if entry is None:
             continue
         if entry.ok and cache.html_path(target.category_code, target.kanri_taishou_id).exists():
             fetched += 1
+            truncated += bool(entry.issue)
         else:
             failed += 1
-    return DetailSummary(total=len(targets), fetched=fetched, failed=failed)
+    return DetailSummary(total=len(targets), fetched=fetched, failed=failed, truncated=truncated)
 
 
 def format_detail_summary(summary: DetailSummary, failures: Sequence[DetailEntry] = ()) -> str:
@@ -569,6 +574,11 @@ def format_detail_summary(summary: DetailSummary, failures: Sequence[DetailEntry
         f"({summary.fetched / summary.total * 100:.1f}%) / "
         f"失敗 {summary.failed:,} 件 / 未取得 {summary.missing:,} 件"
     ]
+    if summary.truncated:
+        lines.append(
+            f"うち相手の不具合で途中までしか取れなかった {summary.truncated:,} 件 "
+            "(印を付けて残した。fetch-detail --retry-failed で取り直せる)"
+        )
     for entry in failures[:5]:
         lines.append(
             f"  失敗: {detail_key(entry.category_code, entry.kanri_taishou_id)} {entry.error}"

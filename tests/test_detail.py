@@ -289,6 +289,17 @@ class Test途中切れ:
 
         assert len(fetcher.urls()) == 3
 
+    def test_取得状況に途中切れの数を出す(self, cache_dir: Path) -> None:
+        cache = DetailCache(cache_dir)
+        fetch_details(
+            [FakeFetcher({self.TARGET.url: server_error(TRUNCATED)})], cache, [self.TARGET]
+        )
+
+        summary = summarize_details(DetailCache(cache_dir), [self.TARGET])
+
+        assert (summary.fetched, summary.failed, summary.truncated) == (1, 0, 1)
+        assert "途中までしか取れなかった 1 件" in format_detail_summary(summary)
+
     def test_正常なページは目印の片方しか持たない(self) -> None:
         """正常な詳細ページにも主情報の終わりの目印はある。エラー画面が無いので当たらない。"""
         assert not truncated(fixture("detail_102.html").encode() + b"<!-- heritage_detail END -->")
