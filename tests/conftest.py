@@ -102,8 +102,12 @@ def put_detail(
     managed_id: str,
     html: str,
     fetched_at: str = FETCHED_AT,
+    issue: str = "",
 ) -> None:
-    """詳細ページ 1 枚をキャッシュへ置く。"""
+    """詳細ページ 1 枚をキャッシュへ置く。
+
+    ``issue`` を渡すと、データベース側の不具合で欠けたページとして置く (ADR 0030)。
+    """
     cache.record(
         DetailEntry(
             category_code=category.code,
@@ -111,6 +115,8 @@ def put_detail(
             ok=True,
             byte_count=len(html),
             fetched_at=fetched_at,
+            issue=issue,
+            http_status=500 if issue else 0,
         ),
         html.encode("utf-8"),
     )
@@ -127,11 +133,12 @@ Responder = Callable[[FormFields], bytes]
 class FakeFetcher:
     """URL ごとに決めた応答を返し、呼ばれた順を記録する取得の身代わり。
 
-    送信値で応答を変えたいときは bytes の代わりに関数を渡す。用意していない
-    URL を叩いたら失敗させる — 余計なリクエストを黙って見逃さないため。
+    送信値で応答を変えたいときは bytes の代わりに関数を渡す。例外を渡すと
+    それを投げる (相手が HTTP のエラーで答えた場面)。用意していない URL を
+    叩いたら失敗させる — 余計なリクエストを黙って見逃さないため。
     """
 
-    def __init__(self, responses: dict[str, bytes | Responder]) -> None:
+    def __init__(self, responses: Mapping[str, bytes | Responder | Exception]) -> None:
         self._responses = responses
         self.calls: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
 
@@ -147,6 +154,8 @@ class FakeFetcher:
         response = self._responses.get(url)
         if response is None:
             raise FetchError(f"用意していない応答を求められた: {url}")
+        if isinstance(response, Exception):
+            raise response
         return response(fields) if callable(response) else response
 
     def urls(self, method: str | None = None) -> list[str]:

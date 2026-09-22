@@ -164,6 +164,10 @@ heritage-crawler render-readme    # この README の表を正本から作り直
 - `--interval` — リクエスト間隔の秒数 = レートの上限 (既定 1.0 = 1 req/s)。
   **これ以上詰めない** — 相手が 200 でエラーページを返す
   ([ADR 0011](docs/decisions/0011-back-off-to-1-rps-and-detect-error-pages.md))
+- **相手が途中まで描いて 500 を返したページは、印を付けて残す。** 取れたところ
+  (主情報・解説文) は採り、行に `source_issue` を付け、データリポジトリのルートの
+  `source-issues.jsonl` に名指しする。週次が毎週確かめ直し、相手が直せば印は消える
+  ([ADR 0030](docs/decisions/0030-record-source-side-defects.md))
 - `--contact` — User-Agent に載せる連絡先 (環境変数 `HERITAGE_CRAWLER_CONTACT` でも指定できる)
 - `--category` / `--area` — 対象を絞る (繰り返し指定できる)
 - `--force` — 取得済みも取り直す

@@ -12,7 +12,7 @@
 
 ```
 出典：「国指定文化財等データベース」（文化庁）
-（https://kunishitei.bunka.go.jp/）（2026年8月11日および2026年8月12日に利用）
+（https://kunishitei.bunka.go.jp/）（2026年8月11日、2026年8月12日および2026年9月23日に利用）
 上記を加工して作成
 ```
 
@@ -29,6 +29,7 @@
 |---|---|
 | 2026-08-11 | `search_index.html` / `search_hit.html` / `search_empty.html` |
 | 2026-08-12 | `detail_101.html` / `detail_102.html` / `detail_103.html` / `detail_401.html` / `listing_p1.html` / `listing_p2.html` |
+| 2026-09-23 | `detail_901_truncated.html` (HTTP 500 で返った、途中まで描かれた詳細ページ) |
 
 ## 画像は含まない
 

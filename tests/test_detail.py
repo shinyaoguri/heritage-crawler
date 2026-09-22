@@ -10,9 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeFetcher, area_named, make_csv, make_row, put_ledger
-from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, LedgerEntry
-from heritage_crawler.catalog import DESIGNATED, SEARCH_AREAS, Category
+from conftest import FakeFetcher, area_named, fixture, make_csv, make_row, put_ledger
+from heritage_crawler.cache import (
+    ISSUE_TRUNCATED,
+    DetailCache,
+    DetailEntry,
+    LedgerCache,
+    LedgerEntry,
+)
+from heritage_crawler.catalog import DESIGNATED, SEARCH_AREAS, WORLD_HERITAGE, Category
 from heritage_crawler.detail import (
     DetailError,
     Presence,
@@ -24,7 +30,9 @@ from heritage_crawler.detail import (
     read_targets,
     recheck_cache,
     summarize_details,
+    truncated,
 )
+from heritage_crawler.http import FetchError
 
 CATEGORY = DESIGNATED  # 102
 
@@ -218,6 +226,84 @@ def test_キャッシュのエラーページを検査して取り直す(cache_d
     # 印が外れているので、続けて取得すれば拾われる
     run = fetch_details([FakeFetcher({url("24"): HTML})], after, targets)
     assert (run.fetched, run.skipped) == (1, 1)
+
+
+TRUNCATED = fixture("detail_901_truncated.html").encode()
+"""相手が「構成資産」の一覧を描く途中で落ち、HTTP 500 で返した詳細ページ (#107)。"""
+
+ONLY_ERROR = b"<html><script>location.href='/bsys/error';</script></html>"
+"""存在しない ID の 500。エラー画面だけで、詳細ページは 1 行も描かれていない。"""
+
+
+def server_error(body: bytes) -> FetchError:
+    return FetchError("GET … が 3 回とも失敗した", status=500, body=body)
+
+
+class Test途中切れ:
+    """相手が 5xx を返しながら途中まで描いた詳細ページ (#107 / ADR 0030)。"""
+
+    TARGET = Target(WORLD_HERITAGE.code, "00000024", "佐渡島の金山")
+
+    def test_途中まで描かれた本文は印を付けて残す(self, cache_dir: Path) -> None:
+        cache = DetailCache(cache_dir)
+
+        run = fetch_details(
+            [FakeFetcher({self.TARGET.url: server_error(TRUNCATED)})], cache, [self.TARGET]
+        )
+
+        assert (run.fetched, run.failed, run.truncated) == (1, 0, 1)
+        after = DetailCache(cache_dir)
+        entry = after.entries[self.TARGET.key]
+        assert (entry.ok, entry.issue, entry.http_status) == (True, ISSUE_TRUNCATED, 500)
+        assert after.read_html(WORLD_HERITAGE.code, "00000024") == TRUNCATED
+        assert after.failures() == []
+        assert after.issues() == [entry]
+
+    def test_エラー画面だけなら失敗のまま(self, cache_dir: Path) -> None:
+        cache = DetailCache(cache_dir)
+
+        run = fetch_details(
+            [FakeFetcher({self.TARGET.url: server_error(ONLY_ERROR)})], cache, [self.TARGET]
+        )
+
+        assert (run.fetched, run.failed, run.truncated) == (0, 1, 0)
+        assert [entry.http_status for entry in cache.failures()] == [500]
+        assert cache.issues() == []
+        assert not cache.html_path(WORLD_HERITAGE.code, "00000024").exists()
+
+    def test_4xx_の本文は目印があっても採らない(self, cache_dir: Path) -> None:
+        cache = DetailCache(cache_dir)
+        error = FetchError("GET … が 404 を返した", status=404, body=TRUNCATED)
+
+        run = fetch_details([FakeFetcher({self.TARGET.url: error})], cache, [self.TARGET])
+
+        assert (run.failed, run.truncated) == (1, 0)
+
+    def test_途中切れも連続失敗に数える(self, cache_dir: Path) -> None:
+        """相手が広い範囲で切れ始めたら、今までどおり打ち切る。"""
+        targets = [Target(WORLD_HERITAGE.code, str(number), "") for number in range(10, 20)]
+        fetcher = FakeFetcher({target.url: server_error(TRUNCATED) for target in targets})
+
+        with pytest.raises(DetailError, match="続けて失敗"):
+            fetch_details([fetcher], DetailCache(cache_dir), targets, failure_limit=3)
+
+        assert len(fetcher.urls()) == 3
+
+    def test_取得状況に途中切れの数を出す(self, cache_dir: Path) -> None:
+        cache = DetailCache(cache_dir)
+        fetch_details(
+            [FakeFetcher({self.TARGET.url: server_error(TRUNCATED)})], cache, [self.TARGET]
+        )
+
+        summary = summarize_details(DetailCache(cache_dir), [self.TARGET])
+
+        assert (summary.fetched, summary.failed, summary.truncated) == (1, 0, 1)
+        assert "途中までしか取れなかった 1 件" in format_detail_summary(summary)
+
+    def test_正常なページは目印の片方しか持たない(self) -> None:
+        """正常な詳細ページにも主情報の終わりの目印はある。エラー画面が無いので当たらない。"""
+        assert not truncated(fixture("detail_102.html").encode() + b"<!-- heritage_detail END -->")
+        assert truncated(TRUNCATED)
 
 
 def test_失敗ぶんは後から拾い直せる(cache_dir: Path) -> None:

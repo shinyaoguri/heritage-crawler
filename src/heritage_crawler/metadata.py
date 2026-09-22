@@ -57,8 +57,12 @@ FACET_KEYS: Final[tuple[str, ...]] = (
     "designation_kind",
     "national_treasure_class",
     "special_class",
+    "source_issue",
 )
 """値の分布を数えるキー。取りうる値が少なく、絞り込みの軸になるものだけ。
+
+``source_issue`` (データベース側の不具合。ADR 0030) もここに置く。閲覧サイトは
+facets に載ったキーから絞り込みを作るので、不具合のある行だけを選べるようになる。
 
 名称や解説文のような値がばらけるキーを入れると、``meta.json`` がデータの
 写しになってしまう。

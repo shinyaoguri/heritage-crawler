@@ -49,7 +49,7 @@ flowchart TD
     end
 
     subgraph DR["データリポジトリ 26 個 (code4heritage)"]
-        J["data/*.jsonl<br/>meta.json<br/>removed.jsonl"]
+        J["data/*.jsonl<br/>meta.json<br/>removed.jsonl<br/>source-issues.jsonl"]
         RZ["リリース<br/>(種別ごとの ZIP)"]
     end
 
@@ -82,7 +82,7 @@ flowchart TD
 | 月 03:00 | crawler | `weekly.yml` が起動。データリポジトリ 26 個を clone (= 前回の状態) し、前回の台帳を artifact から取り出す |
 | | crawler | **1 段目**。分類 × 51 地域の CSV を取り直す (204 リクエスト)。1 地域取れなくても止めず、残りは `retry.sh` の次の回が試す ([ADR 0022](decisions/0022-keep-fetching-the-ledger-when-one-area-fails.md)) |
 | | crawler | 前回の台帳と**バイト単位**で比べ、違ったファイルの行だけキーで突き合わせる。CSV が動いた週だけ `audit-listing --recover` を挟む |
-| | crawler | **2 段目**。新規・値が変わったぶん・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
+| | crawler | **2 段目**。新規・値が変わったぶん・不具合の再確認 ([ADR 0030](decisions/0030-record-source-side-defects.md))・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
 | | crawler | 行を組み立て、**確認日 (`status.json`) と変わったぶん**を commit して push ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。中身が動かなかったリポジトリは「確認 (差分なし)」のコミットが 1 つ立つ |
 | | crawler | heritages の `deliver.yml` を起こす。**確認日は渡さない** — サイトが `status.json` から読む ([ADR 0028](decisions/0028-read-the-checked-date-from-the-data.md)) |
 | 月 03:20 頃 | heritages | 起こされて `deliver.yml` が走る。各データリポジトリを clone し、**配ってよいデータか確かめる**。通ったら配信と配布へ |
@@ -99,6 +99,7 @@ flowchart TD
 | データリポジトリの `data/*.jsonl` | crawler | 都道府県ごとの行 | 行が動いた週 |
 | データリポジトリの `meta.json` | crawler | 出典・**利用日**・表示名・語彙・件数 ([ADR 0014](decisions/0014-machine-readable-dataset-metadata.md)) | 同上 |
 | データリポジトリの `removed.jsonl` | crawler | いま消えている指定 (状態型。復活すれば行が消える) | 落とした週 |
+| データリポジトリの `source-issues.jsonl` | crawler | いまデータベース側の不具合で満足に取れていないもの (状態型。直れば行が消える。[ADR 0030](decisions/0030-record-source-side-defects.md)) | 不具合が現れた・消えた週 |
 | データリポジトリの `status.json` | crawler | **確認日**・利用日・その週に行が動いたか・件数・実行の URL ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md)) | **毎週** |
 | データリポジトリのリリース | **heritages** | 種別ごとの ZIP + 変更履歴 ([ADR 0019](decisions/0019-distribute-archives-through-releases.md)) | 行が動いた回 |
 | heritages のリリース | heritages | 全部入り ZIP + `MANIFEST.json` | 同上 |
@@ -180,7 +181,7 @@ Pages は最後に成功したデプロイを配り続けるので、壊れた�
 
 各データリポジトリには `status.json` だけが動いた**「◯◯ に確認 (差分なし)」の
 コミットが 1 つ**立つ。中身の変化だけを追うなら
-`git log -- data meta.json removed.jsonl` で絞れる。
+`git log -- data meta.json removed.jsonl source-issues.jsonl` で絞れる。
 
 **確かめ続けていることは 2 か所が示す。**データリポジトリの確認日と、サイトの
 「最終確認」。どちらか一方でも古ければ、静かなのではなく取得できていない。

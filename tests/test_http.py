@@ -60,10 +60,13 @@ class FakeTime:
         self.now += seconds
 
 
-def http_error(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(
-        "https://example.test/", code, "boom", email.message.Message(), io.BytesIO(b"")
-    )
+def http_error(
+    code: int, body: bytes = b"", headers: dict[str, str] | None = None
+) -> urllib.error.HTTPError:
+    message = email.message.Message()
+    for name, value in (headers or {}).items():
+        message[name] = value
+    return urllib.error.HTTPError("https://example.test/", code, "boom", message, io.BytesIO(body))
 
 
 def make_client(opener: FakeOpener, clock: FakeTime, **kwargs: Any) -> PoliteClient:
@@ -187,6 +190,34 @@ def test_再試行しきっても駄目なら_FetchError() -> None:
     with pytest.raises(FetchError, match="3 回とも失敗"):
         make_client(opener, FakeTime(), retries=3).get("https://example.test/")
     assert len(opener.requests) == 3
+
+
+def test_エラー応答の本文とステータスを_FetchError_に持たせる() -> None:
+    """5xx の本文が途中まで描かれた詳細ページのことがある (#107 / ADR 0030)。
+
+    使うかどうかは呼び手が決める。持たせるのは**最後の**応答。
+    """
+    opener = FakeOpener(
+        http_error(500, b"first"),
+        http_error(500, gzip.compress(b"last"), {"Content-Encoding": "gzip"}),
+    )
+    with pytest.raises(FetchError) as caught:
+        make_client(opener, FakeTime(), retries=2).get("https://example.test/")
+    assert (caught.value.status, caught.value.body) == (500, b"last")
+
+
+def test_最後の試行が無応答なら前の本文を持ち越さない() -> None:
+    opener = FakeOpener(http_error(500, b"partial"), urllib.error.URLError("timed out"))
+    with pytest.raises(FetchError) as caught:
+        make_client(opener, FakeTime(), retries=2).get("https://example.test/")
+    assert (caught.value.status, caught.value.body) == (0, b"")
+
+
+def test_4xx_の本文も持たせる() -> None:
+    opener = FakeOpener(http_error(404, b"not here"))
+    with pytest.raises(FetchError) as caught:
+        make_client(opener, FakeTime()).get("https://example.test/")
+    assert (caught.value.status, caught.value.body) == (404, b"not here")
 
 
 def test_タイムアウトを_opener_へ渡す() -> None:

@@ -21,7 +21,13 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Final
 
-from heritage_crawler.cache import DetailCache, DetailEntry, LedgerCache, detail_key
+from heritage_crawler.cache import (
+    ISSUE_TRUNCATED,
+    DetailCache,
+    DetailEntry,
+    LedgerCache,
+    detail_key,
+)
 from heritage_crawler.catalog import Area, Category, detail_url
 from heritage_crawler.http import Fetcher, FetchError
 from heritage_crawler.ledger import read_ledger_rows
@@ -48,6 +54,33 @@ MIN_DETAIL_BYTES: Final = 5_000
 
 実物は 33〜55 KB で、上記のエラーページは 3 KB 弱。目印が変わっても大きさで気付く。
 """
+
+
+TRUNCATED_MARKERS: Final = ("<!-- heritage_detail END -->", "/bsys/error")
+"""**途中まで描かれた詳細ページ**の目印 (#107 / ADR 0030)。両方そろったら当たり。
+
+相手のサーバは、ページを組み立てている途中で落ちると、そこまで書き出した HTML の
+後ろにエラー画面 (``location.href='/bsys/error'``) をつないで HTTP 500 で返す。
+``901/00000024`` (佐渡島の金山) では、主情報と本文側の解説文を書き終えた後、
+「構成資産」の一覧を描くところで落ちていた (2026-09-23 実測)。
+
+前者が主情報の終わりで、ここまで描かれていれば名称・所在地などは揃っている。
+存在しない ID の 500 はエラー画面だけなので当たらない。
+"""
+
+
+def truncated(html: bytes) -> bool:
+    """相手が詳細ページを途中まで描いて落ちたか (ADR 0030)。
+
+    **エラー応答の本文にだけ当てる。** 正常な詳細ページも前者の目印は持つ。
+
+    >>> truncated(b"...<!-- heritage_detail END -->...location.href='/bsys/error';")
+    True
+    >>> truncated(b"<script>location.href='/bsys/error';</script>")
+    False
+    """
+    text = html.decode("utf-8", "replace")
+    return all(marker in text for marker in TRUNCATED_MARKERS)
 
 
 def not_found(html: bytes) -> str:
@@ -238,6 +271,8 @@ class DetailRun:
 
     fetched: int = 0
     failed: int = 0
+    truncated: int = 0
+    """途中まで描かれたページを保存した数 (ADR 0030)。``fetched`` にも含む。"""
 
 
 def _utc_now() -> datetime:
@@ -395,7 +430,19 @@ class _RunState:
         try:
             html = fetcher.get(target.url)
         except FetchError as error:
-            self._record(target, ok=False, html=None, error=str(error))
+            if error.status >= 500 and truncated(error.body):
+                # 相手の不具合で途中までしか描かれていない。欠けているのは切れた
+                # 位置の後ろだけなので、捨てずに残して印を付ける (ADR 0030)。
+                self._record(
+                    target,
+                    ok=True,
+                    html=error.body,
+                    error=str(error),
+                    issue=ISSUE_TRUNCATED,
+                    http_status=error.status,
+                )
+                return
+            self._record(target, ok=False, html=None, error=str(error), http_status=error.status)
             return
         # 200 でもエラーページのことがある。掴んだら失敗として扱い、キャッシュに
         # 残さない (残すと取得済みと見なして二度と取り直せない。ADR 0011)。
@@ -404,7 +451,16 @@ class _RunState:
         else:
             self._record(target, ok=True, html=html, error="")
 
-    def _record(self, target: Target, *, ok: bool, html: bytes | None, error: str) -> None:
+    def _record(
+        self,
+        target: Target,
+        *,
+        ok: bool,
+        html: bytes | None,
+        error: str,
+        issue: str = "",
+        http_status: int = 0,
+    ) -> None:
         self._cache.record(
             DetailEntry(
                 category_code=target.category_code,
@@ -413,17 +469,32 @@ class _RunState:
                 byte_count=len(html) if html is not None else 0,
                 fetched_at=self._now().isoformat(timespec="seconds"),
                 error=error,
+                issue=issue,
+                http_status=http_status,
             ),
             html,
         )
         with self._lock:
             if ok:
                 self._run.fetched += 1
-                self._consecutive_failures = 0
             else:
                 self._run.failed += 1
+            if ok and not issue:
+                self._consecutive_failures = 0
+            else:
+                # 途中切れも連続失敗に数える。相手がエラーを返していることに
+                # 変わりはなく、広い範囲で切れ始めたら今までどおり打ち切る。
                 self._consecutive_failures += 1
-                logger.warning("%s (%s) の取得に失敗した: %s", target.key, target.name, error)
+                if issue:
+                    self._run.truncated += 1
+                    logger.warning(
+                        "%s (%s) は相手の不具合で途中までしか取れなかった: %s",
+                        target.key,
+                        target.name,
+                        error,
+                    )
+                else:
+                    logger.warning("%s (%s) の取得に失敗した: %s", target.key, target.name, error)
                 if self._consecutive_failures >= self._failure_limit:
                     self.abort_reason = (
                         f"{self._consecutive_failures} 件続けて失敗した。"
@@ -464,6 +535,9 @@ class DetailSummary:
     total: int
     fetched: int
     failed: int
+    truncated: int = 0
+    """取れはしたが、相手の不具合で途中までしか描かれていない数 (ADR 0030)。
+    ``fetched`` にも含む。"""
 
     @property
     def missing(self) -> int:
@@ -478,15 +552,17 @@ class DetailSummary:
 def summarize_details(cache: DetailCache, targets: Sequence[Target]) -> DetailSummary:
     fetched = 0
     failed = 0
+    truncated = 0
     for target in targets:
         entry = cache.entries.get(target.key)
         if entry is None:
             continue
         if entry.ok and cache.html_path(target.category_code, target.kanri_taishou_id).exists():
             fetched += 1
+            truncated += bool(entry.issue)
         else:
             failed += 1
-    return DetailSummary(total=len(targets), fetched=fetched, failed=failed)
+    return DetailSummary(total=len(targets), fetched=fetched, failed=failed, truncated=truncated)
 
 
 def format_detail_summary(summary: DetailSummary, failures: Sequence[DetailEntry] = ()) -> str:
@@ -498,6 +574,11 @@ def format_detail_summary(summary: DetailSummary, failures: Sequence[DetailEntry
         f"({summary.fetched / summary.total * 100:.1f}%) / "
         f"失敗 {summary.failed:,} 件 / 未取得 {summary.missing:,} 件"
     ]
+    if summary.truncated:
+        lines.append(
+            f"うち相手の不具合で途中までしか取れなかった {summary.truncated:,} 件 "
+            "(印を付けて残した。fetch-detail --retry-failed で取り直せる)"
+        )
     for entry in failures[:5]:
         lines.append(
             f"  失敗: {detail_key(entry.category_code, entry.kanri_taishou_id)} {entry.error}"

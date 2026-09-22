@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
 
+from heritage_crawler.cache import ISSUE_TRUNCATED
 from heritage_crawler.catalog import (
     CATEGORIES_BY_CODE,
     NON_PREFECTURE_AREAS,
@@ -331,6 +332,7 @@ DERIVED_LABELS: Final[dict[str, str]] = {
     "has_itemization": f"{ITEMIZATION_LABEL}の有無",
     "has_related_properties": "関連する文化財の有無",
     "has_photo": "写真の有無",
+    "source_issue": "データベース側の不具合",
 }
 """原文ラベルを持たないキーの表示名。
 
@@ -423,8 +425,20 @@ KEY_ORDER: Final[tuple[str, ...]] = (
     "has_itemization",
     "has_related_properties",
     "has_photo",
+    "source_issue",
 )
 """JSON Lines のキーの並び。順序を固定しないと、同じ内容でも差分が出る。"""
+
+SOURCE_ISSUES: Final[dict[str, str]] = {
+    ISSUE_TRUNCATED: "詳細ページの一部が欠けている",
+}
+"""キャッシュの不具合の種類 → レコードの ``source_issue`` に書く値 (ADR 0030)。
+
+**文字列 1 つにしてある。** 閲覧サイト (heritages) の絞り込みは ``meta.json`` の
+facets に載った文字列から作られるので、これで「不具合のあるものだけ」を選べる。
+何が・いつから欠けているかの詳細はデータリポジトリのルートの
+``source-issues.jsonl`` が持つ。行に日付を持たせると全件の組み立て直しが揺れる。
+"""
 
 # 都道府県で引けない行の受け皿。検索の分割軸と同じものを使う (ADR 0004 の
 # ファイル名がそのまま決まる)。
@@ -526,6 +540,8 @@ class BuildReport:
     stale_files: list[str] = field(default_factory=list)
     removed_files: list[str] = field(default_factory=list)
     """行が 0 件になったので消したファイル (#57)。異常ではないが、黙って消さない。"""
+    source_issues: list[str] = field(default_factory=list)
+    """データベース側の不具合で満足に組み立てられなかったもの (ADR 0030)。**全件を名指しする。**"""
 
     @property
     def has_anomalies(self) -> bool:
@@ -557,11 +573,18 @@ class Built:
     """
 
 
-def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built:
+def build_record(
+    row: LedgerRow, page: DetailPage, report: BuildReport, issue: str = ""
+) -> Built:
     """台帳の 1 行と詳細ページ 1 枚を 1 レコードにする。
 
     値は詳細ページを正とし、CSV からは緯度経度だけを採る。CSV の列は分類に
     よって意味が変わるため、名前が一致していても使わない (ADR 0008 の 3)。
+
+    ``issue`` はキャッシュが記録したデータベース側の不具合 (ADR 0030)。
+    途中までしか描かれていないページでは、切れた位置より後ろの項目 (関連情報・
+    附指定などの一覧・写真) が取れていない。**無いのか取れなかったのかを
+    区別できないので、「無い」と断定する値は書かない。**
     """
     category = row.category
     values: dict[str, Any] = {
@@ -607,7 +630,7 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
 
     _set_or_drop(values, "description", page.description)
     _set_or_drop(values, "detailed_description", page.detailed_description)
-    rellists = _rellists(page, category, report, labels)
+    rellists = _rellists(page, category, report, labels, check_missing=not issue)
     _set_or_drop(values, "annexes", rellists.annexes)
     _set_or_drop(values, "measures", rellists.measures)
     _set_or_drop(values, "holders", rellists.holders)
@@ -625,6 +648,10 @@ def build_record(row: LedgerRow, page: DetailPage, report: BuildReport) -> Built
         elif label not in ANNEX_LABELS and label not in HOLDER_LABELS:
             report.unknown_labels[f"{category.code} 関連情報:{label}"] += 1
     values["has_photo"] = page.has_photo
+    if issue:
+        for key in [key for key in values if key.startswith("has_")]:
+            del values[key]
+        values["source_issue"] = SOURCE_ISSUES[issue]
 
     csv_name = " ".join(part for part in (row.get("名称"), row.get("棟名")) if part)
     page_name = " ".join(
@@ -741,7 +768,12 @@ class Rellists:
 
 
 def _rellists(
-    page: DetailPage, category: Category, report: BuildReport, labels: dict[str, str]
+    page: DetailPage,
+    category: Category,
+    report: BuildReport,
+    labels: dict[str, str],
+    *,
+    check_missing: bool = True,
 ) -> Rellists:
     """``detail_rellist_*`` モーダルを附指定・措置・保持者に振り分ける。
 
@@ -766,7 +798,9 @@ def _rellists(
                 entry = {"kind": _holder_kind(raw), **entry}
             target.append(entry)
 
-    _check_missing(page, category, report, found)
+    if check_missing:
+        # 途中で切れたページは一覧のモーダルを持たない。欠けて当然なので数えない。
+        _check_missing(page, category, report, found)
     return found
 
 

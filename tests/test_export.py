@@ -13,11 +13,33 @@ from pathlib import Path
 from typing import Any
 
 from conftest import FETCHED_AT, area_named, fixture, lines, put_detail, put_ledger
-from heritage_crawler.cache import DetailCache, LedgerCache
-from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, SELECTED, datasets_for
-from heritage_crawler.export import REMOVED_FILENAME, Reuse, build_dataset, format_report
+from heritage_crawler.cache import ISSUE_TRUNCATED, DetailCache, DetailEntry, LedgerCache
+from heritage_crawler.catalog import (
+    DESIGNATED,
+    MONUMENTS,
+    REGISTERED,
+    SELECTED,
+    WORLD_HERITAGE,
+    Category,
+    datasets_for,
+)
+from heritage_crawler.export import (
+    REMOVED_FILENAME,
+    SOURCE_ISSUES_FILENAME,
+    Reuse,
+    build_dataset,
+    format_report,
+)
 from heritage_crawler.ledger import read_ledger_rows
-from heritage_crawler.update import plan_update, read_existing, reuse_for
+from heritage_crawler.record import BuildReport
+from heritage_crawler.update import (
+    Reason,
+    UpdatePlan,
+    plan_update,
+    read_existing,
+    reuse_for,
+    rotation_slot,
+)
 
 SAMPLES = {
     REGISTERED: ("00004339", "detail_101.html", "東京都"),
@@ -637,6 +659,268 @@ class Test削除の記録:
         build_dataset(ledger, detail, list(SAMPLES), output_dir=out)
 
         assert path.read_bytes() == before
+
+
+def put_failure(
+    cache: DetailCache, category: Category, managed_id: str, fetched_at: str = FETCHED_AT
+) -> None:
+    """詳細ページの取得に失敗した記録を置く (相手が本文の使えない 500 を返した)。"""
+    cache.record(
+        DetailEntry(
+            category_code=category.code,
+            kanri_taishou_id=managed_id,
+            ok=False,
+            byte_count=0,
+            fetched_at=fetched_at,
+            error="GET … が 3 回とも失敗した",
+            http_status=500,
+        )
+    )
+
+
+class Testデータベース側の不具合:
+    """相手の不具合で満足に取れなかったものを、データと一覧に残す (#107 / ADR 0030)。
+
+    ``901/00000024`` (佐渡島の金山) は、相手が「構成資産」の一覧を描く途中で落ち、
+    HTTP 500 を返し続けていた。1 か月、ログの 1 行にしか現れなかった。
+    """
+
+    REPO = "world-heritage-sites"
+    FILE = "15_niigata.jsonl"
+    SADO = "00000024"
+    OTHER = "00000011"
+    WEEK = "2026-09-28T00:00:00+00:00"
+    PAGE = fixture("detail_901_truncated.html")
+
+    def issues(self, out: Path) -> list[dict[str, Any]]:
+        return lines(out / self.REPO / SOURCE_ISSUES_FILENAME)
+
+    def rows(self, out: Path) -> dict[str, dict[str, Any]]:
+        return {row["managed_id"]: row for row in lines(out / self.REPO / "data" / self.FILE)}
+
+    def prepare(self, cache_dir: Path, out: Path, ids: list[str]) -> LedgerCache:
+        """`ids` を完全な詳細ページから書き出した状態にし、台帳には 2 件を載せる。"""
+        before = LedgerCache(cache_dir / "before")
+        detail = DetailCache(cache_dir / "before")
+        put_ledger(before, WORLD_HERITAGE, area_named("新潟県"), ids)
+        for managed_id in ids:
+            put_detail(detail, WORLD_HERITAGE, managed_id, self.PAGE)
+        build_dataset(before, detail, [WORLD_HERITAGE], output_dir=out)
+        ledger = LedgerCache(cache_dir / "ledger")
+        put_ledger(
+            ledger,
+            WORLD_HERITAGE,
+            area_named("新潟県"),
+            [self.OTHER, self.SADO],
+            values={"名称": "佐渡島の金山"},
+        )
+        return ledger
+
+    def week(
+        self, ledger: LedgerCache, detail: DetailCache, out: Path, *, slot: int = 99
+    ) -> tuple[UpdatePlan, BuildReport]:
+        """週次の update-records と同じ経路 (計画 → 使い回し → 書き出し) を通す。"""
+        existing = read_existing(out, datasets_for([WORLD_HERITAGE]))
+        plan = plan_update(
+            existing,
+            read_ledger_rows(ledger, [WORLD_HERITAGE]),
+            slot=slot,
+            complete_categories={WORLD_HERITAGE.code},
+        )
+        report = build_dataset(
+            ledger,
+            detail,
+            [WORLD_HERITAGE],
+            output_dir=out,
+            reuse=reuse_for(plan, existing, self.WEEK),
+        )
+        return plan, report
+
+    def test_途中切れの新規は印付きで書き一覧に載せる(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER])
+        detail = DetailCache(tmp_path / "week1")
+        put_detail(detail, WORLD_HERITAGE, self.SADO, self.PAGE, self.WEEK, ISSUE_TRUNCATED)
+
+        _, report = self.week(ledger, detail, out)
+
+        rows = self.rows(out)
+        assert rows[self.SADO]["source_issue"] == "詳細ページの一部が欠けている"
+        assert "source_issue" not in rows[self.OTHER]
+        assert self.issues(out) == [
+            {
+                "ledger_id": "901",
+                "managed_id": self.SADO,
+                "category_code": "901",
+                "name": "佐渡島の金山",
+                "url": "https://kunishitei.bunka.go.jp/heritage/detail/901/00000024",
+                "kind": "truncated",
+                "http_status": 500,
+                "in_data": True,
+                "first_seen": "2026-09-28",
+            }
+        ]
+        assert report.missing_html == 0  # 0 件になった県の掃除 (#57) を止めない
+        assert "データベース側の不具合 (source-issues.jsonl): 1 件" in format_report(report)
+        meta = json.loads((out / self.REPO / "meta.json").read_text(encoding="utf-8"))
+        assert meta["facets"]["source_issue"] == {"詳細ページの一部が欠けている": 1}
+
+    def test_切れたままの週は毎週確かめ直し一覧は動かない(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """`first_seen` は壊れ始めた日。翌週に進めては意味が変わる。"""
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER])
+        detail = DetailCache(tmp_path / "week1")
+        put_detail(detail, WORLD_HERITAGE, self.SADO, self.PAGE, self.WEEK, ISSUE_TRUNCATED)
+        self.week(ledger, detail, out)
+        before = (out / self.REPO / SOURCE_ISSUES_FILENAME).read_bytes()
+
+        later = DetailCache(tmp_path / "week2")
+        next_week = "2026-10-05T00:00:00+00:00"
+        put_detail(later, WORLD_HERITAGE, self.SADO, self.PAGE, next_week, ISSUE_TRUNCATED)
+        plan, _ = self.week(ledger, later, out)
+
+        assert [(item.key, item.reason) for item in plan.refetch] == [
+            ("901/00000024", Reason.RECHECK)
+        ]
+        assert (out / self.REPO / SOURCE_ISSUES_FILENAME).read_bytes() == before
+
+    def test_直れば印も一覧も消える(self, cache_dir: Path, tmp_path: Path) -> None:
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER])
+        detail = DetailCache(tmp_path / "week1")
+        put_detail(detail, WORLD_HERITAGE, self.SADO, self.PAGE, self.WEEK, ISSUE_TRUNCATED)
+        self.week(ledger, detail, out)
+
+        fixed = DetailCache(tmp_path / "week2")
+        put_detail(fixed, WORLD_HERITAGE, self.SADO, self.PAGE)
+        self.week(ledger, fixed, out)
+
+        assert "source_issue" not in self.rows(out)[self.SADO]
+        assert not (out / self.REPO / SOURCE_ISSUES_FILENAME).exists()
+
+    def test_前回の完全な行は途中切れで上書きしない(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """欠けた行に置き換えるより、揃った古い行を残して「古い」と名指しする。
+
+        利用日も動かない — データを取り出し直したわけではない。
+        """
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER, self.SADO])
+        before = (out / self.REPO / "data" / self.FILE).read_bytes()
+        meta = (out / self.REPO / "meta.json").read_bytes()
+        detail = DetailCache(tmp_path / "week1")
+        put_detail(detail, WORLD_HERITAGE, self.SADO, self.PAGE, self.WEEK, ISSUE_TRUNCATED)
+
+        # 佐渡が巡回の枠に入る週にする (取り直すと決めたのに、途中までしか取れない)
+        plan, _ = self.week(ledger, detail, out, slot=rotation_slot("901/00000024"))
+
+        assert [item.reason for item in plan.refetch] == [Reason.ROTATED]
+        assert (out / self.REPO / "data" / self.FILE).read_bytes() == before
+        assert (out / self.REPO / "meta.json").read_bytes() == meta
+        [entry] = self.issues(out)
+        assert (entry["kind"], entry["in_data"]) == ("stale", True)
+
+    def test_取り直しに失敗したら古いまま使っていると名指しする(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER, self.SADO])
+        detail = DetailCache(tmp_path / "week1")
+        put_failure(detail, WORLD_HERITAGE, self.SADO, self.WEEK)
+
+        plan, _ = self.week(ledger, detail, out, slot=rotation_slot("901/00000024"))
+
+        [entry] = self.issues(out)
+        assert (entry["kind"], entry["first_seen"]) == ("stale", "2026-09-28")
+        # 翌週は巡回の枠を外れていても確かめ直す
+        plan, _ = self.week(ledger, DetailCache(tmp_path / "week2"), out)
+        assert [item.reason for item in plan.refetch] == [Reason.RECHECK]
+
+    def test_取り直していない行を古いと言わない(self, cache_dir: Path, tmp_path: Path) -> None:
+        """手元のキャッシュに昔の失敗が残っていても、今回取りに行っていなければ拾わない。"""
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER, self.SADO])
+        detail = DetailCache(tmp_path / "old")
+        put_failure(detail, WORLD_HERITAGE, self.SADO)
+
+        self.week(ledger, detail, out)
+
+        assert not (out / self.REPO / SOURCE_ISSUES_FILENAME).exists()
+
+    def test_一度も取れていないものは行を書かずに名指しする(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        out = tmp_path / "repos"
+        ledger = self.prepare(cache_dir, out, [self.OTHER])
+        detail = DetailCache(tmp_path / "week1")
+        put_failure(detail, WORLD_HERITAGE, self.SADO, self.WEEK)
+
+        self.week(ledger, detail, out)
+
+        assert self.SADO not in self.rows(out)
+        [entry] = self.issues(out)
+        assert (entry["kind"], entry["in_data"], entry["name"]) == (
+            "unavailable",
+            False,
+            "佐渡島の金山",
+        )
+
+    def test_振り分けが種別で決まる分類は一覧に書かず報告だけ(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """102 は詳細ページを読むまで国宝か重要文化財か分からない。当て推量で書かない。"""
+        out = tmp_path / "repos"
+        ledger, detail = LedgerCache(cache_dir), DetailCache(cache_dir)
+        put_ledger(ledger, DESIGNATED, area_named("奈良県"), ["2594", "2595"])
+        put_detail(detail, DESIGNATED, "2594", fixture("detail_102.html"))
+        build_dataset(ledger, detail, [DESIGNATED], output_dir=out)
+        week = DetailCache(tmp_path / "week1")
+        put_failure(week, DESIGNATED, "2595", self.WEEK)
+        existing = read_existing(out, datasets_for([DESIGNATED]))
+        plan = plan_update(
+            existing,
+            read_ledger_rows(ledger, [DESIGNATED]),
+            slot=99,
+            complete_categories={DESIGNATED.code},
+        )
+
+        report = build_dataset(
+            ledger,
+            week,
+            [DESIGNATED],
+            output_dir=out,
+            reuse=reuse_for(plan, existing, self.WEEK),
+        )
+
+        assert not list(out.glob(f"*/{SOURCE_ISSUES_FILENAME}"))
+        assert report.source_issues == [
+            "102/2595 unavailable (HTTP 500、2026-09-28 から、書き先なし)"
+        ]
+
+    def test_全件の組み立て直しでは一覧に触らないが印は付ける(
+        self, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        """「古いまま使っている」も「いつから壊れているか」もキャッシュからは再現できない。"""
+        out = tmp_path / "repos"
+        ledger = LedgerCache(cache_dir)
+        detail = DetailCache(cache_dir)
+        put_ledger(ledger, WORLD_HERITAGE, area_named("新潟県"), [self.SADO])
+        put_detail(detail, WORLD_HERITAGE, self.SADO, self.PAGE, self.WEEK, ISSUE_TRUNCATED)
+        path = out / self.REPO / SOURCE_ISSUES_FILENAME
+        path.parent.mkdir(parents=True)
+        path.write_text('{"ledger_id": "901", "managed_id": "9999"}\n', encoding="utf-8")
+        before = path.read_bytes()
+
+        report = build_dataset(ledger, detail, [WORLD_HERITAGE], output_dir=out)
+
+        assert path.read_bytes() == before
+        assert self.rows(out)[self.SADO]["source_issue"] == "詳細ページの一部が欠けている"
+        assert len(report.source_issues) == 1
 
 
 def test_報告に件数と異常が出る(cache_dir: Path, tmp_path: Path) -> None:
