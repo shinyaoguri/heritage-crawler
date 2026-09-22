@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-このライセンスが対象とするのは、このリポジトリのソースコードとドキュメントです。
-本ソフトウェアが取得するデータ (国指定文化財等データベースの掲載情報) は
-対象外で、文化庁の利用規約に従います。詳細は README.md および
-docs/decisions/0007-redistribute-text-with-attribution.md を参照してください。

@@ -8,6 +8,11 @@ on:
   # タイトルを直すたびに matrix 3 本が丸ごと再走してしまう。
   pull_request:
 
+# リポジトリ既定も read だが、既定が変わっても広がらないよう明示する (CodeQL の
+# actions/missing-workflow-permissions)。他のワークフローはすべて明示している。
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
