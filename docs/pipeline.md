@@ -85,7 +85,7 @@ flowchart TD
 | | crawler | **2 段目**。新規・値が変わったぶん・その週の 1/52 の巡回だけ詳細ページを取り直す。落とす候補は詳細ページで実在を確かめる ([ADR 0021](decisions/0021-record-removals-with-evidence.md)) |
 | | crawler | 行を組み立て、**確認日 (`status.json`) と変わったぶん**を commit して push ([ADR 0023](decisions/0023-stamp-every-check-into-the-data-repositories.md))。中身が動かなかったリポジトリは「確認 (差分なし)」のコミットが 1 つ立つ |
 | | crawler | heritages の `deliver.yml` を起こす。**確認日は渡さない** — サイトが `status.json` から読む ([ADR 0028](decisions/0028-read-the-checked-date-from-the-data.md)) |
-| 月 03:20 頃 | heritages | 起こされて `deliver.yml` が走る。10 リポジトリを clone し、**配ってよいデータか確かめる**。通ったら配信と配布へ |
+| 月 03:20 頃 | heritages | 起こされて `deliver.yml` が走る。各データリポジトリを clone し、**配ってよいデータか確かめる**。通ったら配信と配布へ |
 | | heritages | サイトを組み立てて Pages へ。前回の配布物と比べて変更履歴を書き、**行が動いた回だけ**リリースを立てる |
 | 月 08:00 | heritages | **保険の cron。**起こされなかった週 (クローラーが転んだ・dispatch が届かなかった) はここで拾う |
 

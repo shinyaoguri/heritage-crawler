@@ -15,8 +15,8 @@ name: 週次の差分更新
 # では動かず、動かないままだと**静かなのか止まっているのかが外から見えない**。
 # 中身が動かなかったリポジトリには `status.json` だけのコミットが 1 つ立つ。
 #
-# 必要な secret は 2 つ。code4heritage org の GitHub App で、**対象 10 リポジトリに
-# contents:write**、**heritages に actions:write** を与える。
+# 必要な secret は 2 つ。code4heritage org の GitHub App で、**対象のデータ
+# リポジトリすべてに contents:write**、**heritages に actions:write** を与える。
 #
 # - DATA_PUSH_CLIENT_ID   … App の Client ID
 # - DATA_PUSH_PRIVATE_KEY … App の秘密鍵 (PEM のまま)

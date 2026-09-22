@@ -213,7 +213,7 @@ def build_dataset(
         fetched_at = reuse.accessed_at if reuse else latest_fetch[dataset]
         # **行が動いていないなら利用日も動かさない** (ADR 0020)。取り出し直して
         # いない回に日付だけ進めると、出典表記が実態とずれるうえ、確認しただけの
-        # 回に 10 リポジトリぶんのコミットが立つ。
+        # 回に全データリポジトリぶんのコミットが立つ。
         accessed = ""
         if reuse is not None and dataset not in touched:
             accessed = reuse.accessed_dates.get(dataset.repo, "")

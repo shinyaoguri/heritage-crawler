@@ -2,8 +2,8 @@
 
 2 段構え (ADR 0002) をそのままコマンドにしてある。
 
-1. ``fetch-ledger`` で分類 × 地域の CSV を取る (204 リクエスト / 約 30 分)
-2. ``fetch-detail`` で台帳の各行から詳細ページを取る (約 2.4 万件 / 約 6.6 時間)
+1. ``fetch-ledger`` で分類 × 地域の CSV を取る (約 570 リクエスト / 約 40 分)
+2. ``fetch-detail`` で台帳の各行から詳細ページを取る (約 3.7 万件 / 約 10 時間)
 
 どちらも中断しても取得済みを飛ばして再開する。既定のレート上限は 1 req/s
 (間隔 1 秒)。相手はこれを超えると 200 でエラーページを返す (ADR 0011)。
@@ -65,7 +65,14 @@ from heritage_crawler.listing import (
     recover_missing,
 )
 from heritage_crawler.metadata import JST
-from heritage_crawler.readme import ReadmeError, read_counts, render_block, replace_block
+from heritage_crawler.readme import (
+    DATASETS_BEGIN_MARKER,
+    ReadmeError,
+    read_counts,
+    render_block,
+    render_datasets_block,
+    replace_block,
+)
 from heritage_crawler.search_page import ParseError
 from heritage_crawler.status import checked_today
 from heritage_crawler.update import (
@@ -198,7 +205,7 @@ def _output_dir_option(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="heritage-crawler",
-        description="国指定文化財等データベースから建造物関連データを取得する",
+        description="国指定文化財等データベースの全データを取得する",
     )
     parser.add_argument(
         "--cache-dir", type=Path, default=DEFAULT_CACHE_DIR, help="キャッシュの置き場"
@@ -304,8 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     render = subparsers.add_parser(
         "render-readme",
-        help="README の件数表を書き出したデータから作り直す",
-        description="散文に写した件数は新規指定・解除のたびに嘘になるので生成する (Issue #37)。",
+        help="README の件数表と出力先リポジトリの表を正本から作り直す",
+        description=(
+            "散文に写した数は指定の増減や分類の追加のたびに嘘になるので生成する"
+            " (Issue #37 / Issue #102)。"
+        ),
     )
     _output_dir_option(render)
     render.add_argument(
@@ -323,7 +333,7 @@ def _date(value: str) -> str:
     """``YYYY-MM-DD`` として読めることだけ確かめる。
 
     確認日は残り続ける記録なので、読めない値を書いてから気付くと直しにくい
-    (次の週に上書きされるまで、データリポジトリ 10 個に残る)。
+    (次の週に上書きされるまで、各データリポジトリに残る)。
     """
     try:
         return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
@@ -654,25 +664,28 @@ def _run_render_readme(args: argparse.Namespace) -> int:
     Issue に載せられるようにするため (``.github/workflows/weekly.yml``)。
     """
     try:
-        block = render_block(read_counts(args.output_dir))
+        counts = render_block(read_counts(args.output_dir))
+        datasets = render_datasets_block()
         current = args.readme.read_text(encoding="utf-8")
-        updated = replace_block(current, block)
+        updated = replace_block(current, counts)
+        updated = replace_block(updated, datasets, DATASETS_BEGIN_MARKER)
     except (ReadmeError, OSError) as error:
         logger.error("%s", error)
         return 1
 
     if updated == current:
-        print(f"{args.readme} の件数表はデータと一致している")
+        print(f"{args.readme} の表は正本と一致している")
         return 0
     if args.check:
-        print(block)
+        print(counts)
+        print(datasets)
         logger.error(
-            "%s の件数表がデータとずれている。heritage-crawler render-readme で作り直す",
+            "%s の表が正本とずれている。heritage-crawler render-readme で作り直す",
             args.readme,
         )
         return 1
     args.readme.write_text(updated, encoding="utf-8")
-    print(f"{args.readme} の件数表を書き直した")
+    print(f"{args.readme} の表を書き直した")
     return 0
 
 

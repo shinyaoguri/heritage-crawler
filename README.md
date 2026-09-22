@@ -1,7 +1,7 @@
 # heritage-crawler
 
 [国指定文化財等データベース](https://kunishitei.bunka.go.jp/bsys/index) (文化庁) から
-建造物と記念物に関連したデータを抽出し、JSON Lines として記録するクローラー。
+**全データ**を抽出し、JSON Lines として記録するクローラー。
 
 抽出したデータの出力先は文化財の種別ごとの別リポジトリで、このリポジトリは
 クローラー本体のみを持つ
@@ -10,16 +10,18 @@
 
 ## 対象の文化財種別
 
-建造物と記念物に関連する 4 つの文化財分類を取る。分類コードは検索フォームの
-`register_sub_id` かつ CSV の台帳ID で、取得の単位でもある
-(定義は `src/heritage_crawler/catalog.py` の `TARGET_CATEGORIES` が正本)。
+検索フォームの `register_sub_id` が提供する分類をすべて取る
+([ADR 0025](docs/decisions/0025-crawl-every-category.md))。分類コードは取得の単位で、
+**CSV の台帳ID とは別物** — 1 つの台帳ID に複数の分類が同居する (#74)。
+定義は `src/heritage_crawler/catalog.py` の `TARGET_CATEGORIES` が正本で、
+下の表はそこと書き出したデータから生成している。
 
 <!-- generated: heritage-crawler render-readme -->
 | 分類コード | 文化財種別 | 指定行為 | 指定件数 | 取得対象 | 収録行数 |
 |---|---|---|---|---|---|
-| 101 | 登録有形文化財（建造物） | 登録 | 14,748 | 14,748 | 14,748 |
+| 101 | 登録有形文化財（建造物） | 登録 | 14,748 | 14,885 | 14,885 |
 | 102 | 国宝・重要文化財（建造物） | 指定 | 2,633 | 5,587 | 5,587 |
-| 201 | 国宝・重要文化財（美術工芸品） | 指定 | 10,954 | 11,433 | 11,433 |
+| 201 | 国宝・重要文化財（美術工芸品） | 指定 | 10,954 | 11,525 | 11,525 |
 | 211 | 登録有形文化財（美術工芸品） | 登録 | 18 | 18 | 18 |
 | 202 | 登録美術品 | 登録 | 40 | 40 | 40 |
 | 301 | 重要有形民俗文化財 | 指定 | 229 | 229 | 229 |
@@ -36,7 +38,7 @@
 | 411 | 登録記念物 | 登録 | 148 | 148 | 148 |
 | 412 | 重要文化的景観 | 選定 | 74 | 74 | 74 |
 | 901 | 世界遺産 | 登録 | 21 | 20 | 20 |
-| **計** | | | **33,658** | **37,090** | **37,204** |
+| **計** | | | **33,658** | **37,319** | **37,433** |
 <!-- /generated -->
 
 - **この表は生成物。手で書き換えない。** 指定件数は
@@ -45,8 +47,9 @@
   `heritage-crawler render-readme` が差し込み口の中身を作り直す。散文に写した
   件数は新規指定・解除のたびに静かに嘘になる
 - **指定件数と取得対象は単位が違う。** 検索結果の件数表示は指定単位、CSV の行数と
-  出力レコードは棟単位。棟に展開されるのは 102 だけで (1 指定あたり約 2.5 棟)、
-  101・103・401 は指定 = 1 行。網羅性の判定に使えるのは指定件数だけ
+  出力レコードは棟・件の単位。展開される分類は `src/heritage_crawler/catalog.py` の
+  `Category.expands_to_buildings` が持ち、残りは指定 = 1 行 (**表で指定件数と取得対象が
+  食い違っているのがその分類**)。網羅性の判定に使えるのは指定件数だけ
   (`report-ledger` が地域合計と全国件数を突き合わせる)
 - **取得対象と収録行数の差は 401 の複合指定。** 種別を 2 つ持つ指定は両方の
   リポジトリへ同じ行を書くので (ADR 0012)、行数を足し上げると異なりキー数を
@@ -55,8 +58,10 @@
   (実装は `src/heritage_crawler/record.py` の `DESIGNATION_KINDS`)
 - 指定件数は 2026-08-11 の実測。新規指定・解除で増減するため、厳密一致の検査では
   なく欠損の目安に使う
-- 対象外は美術工芸品・民俗文化財・選定保存技術など。世界遺産 (901) も建造物・
-  記念物とは別軸の指定なので含めない
+- **世界遺産 (901) は他分類と名寄せしない。** 同じ物件が構成資産として別の
+  リポジトリにも入るが、901 は別の台帳に立った別のレコードで、構成資産は 1 本の
+  文字列。`(台帳ID, 管理対象ID)` では結び付かず、名称での突き合わせも誤爆する
+  ([ADR 0025](docs/decisions/0025-crawl-every-category.md))
 
 出力先のリポジトリは分類と 1:1 ではない。102 は詳細ページの「国宝・重文区分」で
 2 つに、401 は `種別１` / `種別２` で 6 つに分かれる (定義は
@@ -64,19 +69,41 @@
 [ADR 0009](docs/decisions/0009-output-to-existing-per-type-repositories.md) /
 [ADR 0012](docs/decisions/0012-crawl-monuments-and-route-by-kind.md))。
 
+<!-- generated: heritage-crawler render-readme (datasets) -->
 | リポジトリ | 取得対象 |
 |---|---|
 | `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） |
-| `national-treasures` | 102 のうち国宝 |
-| `important-cultural-properties` | 102 の残り (重要文化財) |
+| `national-treasures` | 102 国宝（建造物） |
+| `important-cultural-properties` | 102 重要文化財（建造物） |
 | `important-preservation-districts-for-groups-of-traditional-buildings` | 103 重要伝統的建造物群保存地区 |
-| `special-historic-sites` | 401 のうち特別史跡 |
-| `historic-sites` | 401 のうち史跡 |
-| `special-places-of-scenic-beauty` | 401 のうち特別名勝 |
-| `places-of-scenic-beauty` | 401 のうち名勝 |
-| `special-natural-monuments` | 401 のうち特別天然記念物 |
-| `natural-monuments` | 401 のうち天然記念物 |
+| `special-historic-sites` | 401 特別史跡 |
+| `historic-sites` | 401 史跡 |
+| `special-places-of-scenic-beauty` | 401 特別名勝 |
+| `places-of-scenic-beauty` | 401 名勝 |
+| `special-natural-monuments` | 401 特別天然記念物 |
+| `natural-monuments` | 401 天然記念物 |
+| `national-treasures-of-fine-arts` | 201 国宝（美術工芸品） |
+| `important-cultural-properties-of-fine-arts` | 201 重要文化財（美術工芸品） |
+| `registered-tangible-cultural-properties-of-fine-arts` | 211 登録有形文化財（美術工芸品） |
+| `registered-art-works` | 202 登録美術品 |
+| `important-tangible-folk-cultural-properties` | 301 重要有形民俗文化財 |
+| `registered-tangible-folk-cultural-properties` | 311 登録有形民俗文化財 |
+| `important-intangible-folk-cultural-properties` | 302 重要無形民俗文化財 |
+| `registered-intangible-folk-cultural-properties` | 322 登録無形民俗文化財 |
+| `documented-intangible-folk-cultural-properties` | 312 記録作成等の措置を講ずべき無形の民俗文化財 |
+| `important-intangible-cultural-properties` | 303 重要無形文化財 |
+| `registered-intangible-cultural-properties` | 323 登録無形文化財 |
+| `documented-intangible-cultural-properties` | 313 記録作成等の措置を講ずべき無形文化財 |
+| `selected-conservation-techniques` | 304 選定保存技術 |
+| `registered-monuments` | 411 登録記念物 |
+| `important-cultural-landscapes` | 412 重要文化的景観 |
+| `world-heritage-sites` | 901 世界遺産 |
+<!-- /generated -->
 
+- **この表も生成物。手で書き換えない。** 正本は
+  `src/heritage_crawler/catalog.py` の `TARGET_DATASETS` で、
+  `heritage-crawler render-readme` が差し込み口の中身を作り直す。**件数表と違って
+  データを読まないので、ずれはテストが PR の CI で捕まえる** (#102)
 - **国宝は重要文化財の、特別◯◯ は ◯◯ のうちから指定される**が、リポジトリには
   排他に振り分ける (特別史跡は `historic-sites` には書かない)
 - **401 には種別を 2 つ持つ複合指定がある** (旧浜離宮庭園 = 特別名勝 + 特別史跡)。
@@ -87,7 +114,7 @@
   401 はどこへも書かない (受け皿を置くと振り分けの誤りが史跡に紛れる)。
   どちらも件数は `build-records` の報告に出して見張る
 
-クローラーが書くのはこの 10 リポジトリちょうど。**「重要」の付かない伝統的建造物群
+クローラーが書くのはこの表のリポジトリちょうど。**「重要」の付かない伝統的建造物群
 保存地区のデータは存在しない** — 国が選定するのは重要伝統的建造物群保存地区で、
 伝統的建造物群保存地区の決定は市町村が行うためデータベースの対象外
 ([ADR 0013](docs/decisions/0013-delete-the-repository-without-data.md))。
@@ -128,7 +155,7 @@ heritage-crawler fetch-detail     # 2 段目: 台帳の各行から詳細ペー�
 heritage-crawler report-detail    # 詳細ページの取得状況を確かめる
 heritage-crawler build-records    # キャッシュから JSON Lines を組み立てる
 heritage-crawler update-records   # 週次: 前回の出力と突き合わせて差分だけ取り直す
-heritage-crawler render-readme    # この README の件数表を書き出したデータから作り直す
+heritage-crawler render-readme    # この README の表を正本から作り直す
 ```
 
 取得はいずれも `cache/` 配下へ生の取得物のまま置き、**中断しても同じコマンドで
@@ -143,8 +170,8 @@ heritage-crawler render-readme    # この README の件数表を書き出した
 
 ### 1 段目 — `fetch-ledger`
 
-19 分類 × その分類の分割軸 (都道府県中心。分類によっては全国 1 回)
-を順に取得する (約 570 リクエスト / 約 40 分)。
+分類 × その分類の分割軸 (都道府県中心。分類によっては全国 1 回) を順に
+取得する (約 570 リクエスト / 約 40 分)。
 
 分類ごとに地域で絞らない検索も 1 回行い、その全国件数と地域合計を突き合わせて
 網羅性を確かめる。差が出たら報告に出る (負 = どの地域でも引けない指定がある、
@@ -354,7 +381,7 @@ gh workflow run reachability.yml
 
 ### 週次の差分更新 (`.github/workflows/weekly.yml`)
 
-毎週月曜 03:00 JST に走り、26 のデータリポジトリを clone → 台帳を取り直す →
+毎週月曜 03:00 JST に走り、各データリポジトリを clone → 台帳を取り直す →
 **前回の台帳とバイト単位で突き合わせる** → 変わったぶんだけ詳細を取り直す →
 **確認日と、変わったぶんを push する**
 ([ADR 0020](docs/decisions/0020-check-weekly-by-diffing-the-ledger-csv.md) /
@@ -375,7 +402,7 @@ gh workflow run weekly.yml -f dry-run=true
   中身が変わった週とはコミットメッセージで区別できる
   ([ADR 0023](docs/decisions/0023-stamp-every-check-into-the-data-repositories.md))。
   同じ確認日をサイトの「最終確認」にも渡す
-- **押す手順は `scripts/push-data-repos.sh`。** 10 リポジトリへ実際に押す唯一の
+- **押す手順は `scripts/push-data-repos.sh`。** データリポジトリへ実際に押す唯一の
   場所なので、ワークフローの YAML に埋めず、テストを当ててある
   (`scripts/test-push-data-repos.sh` が手元の bare リポジトリを押し先にして、
   コミットメッセージの出し分けと数え上げを検査する)
@@ -398,7 +425,7 @@ gh workflow run weekly.yml -f dry-run=true
   落とさないため
 
 push 先が別リポジトリなので `GITHUB_TOKEN` では足りない。`code4heritage` org に
-GitHub App を作り、**対象の 10 リポジトリ**に `contents: write` を、
+GitHub App を作り、**対象のデータリポジトリすべて**に `contents: write` を、
 **`heritages`** に `actions: write` を与えて、secret を 2 つ登録する
 (押し終えてから heritages を起こすため。**確認日は渡さない** —
 [ADR 0028](docs/decisions/0028-read-the-checked-date-from-the-data.md))。

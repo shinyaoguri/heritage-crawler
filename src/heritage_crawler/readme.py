@@ -1,4 +1,11 @@
-"""README の件数表を、書き出したデータそのものから組み立てる (Issue #37)。
+"""README の表を、散文ではなく正本そのものから組み立てる (Issue #37 / Issue #102)。
+
+差し込み口は 2 つあり、**正本も検査できる場所も違う**。
+
+| 表 | 正本 | 検査できる場所 |
+|---|---|---|
+| 件数表 | 書き出したデータ (``meta.json`` と JSON Lines) | 週次のみ (CI に ``data`` が無い) |
+| 出力先リポジトリ | ``catalog.TARGET_DATASETS`` | テスト = PR の CI |
 
 散文に手で書いた件数は、新規指定・解除のたびに静かに嘘になる。**正本は既にある**
 — 各データリポジトリの ``meta.json`` (ADR 0014) と JSON Lines そのもの。README の
@@ -31,6 +38,18 @@ BEGIN_MARKER: Final = "<!-- generated: heritage-crawler render-readme -->"
 END_MARKER: Final = "<!-- /generated -->"
 """差し込み口。**生成物であることを読む人にも見せる**ための目印でもある。"""
 
+DATASETS_BEGIN_MARKER: Final = "<!-- generated: heritage-crawler render-readme (datasets) -->"
+"""出力先リポジトリの表の差し込み口 (Issue #102)。
+
+**件数表と違って、この表はデータを読まずに作れる** — 中身は ``TARGET_DATASETS``
+だけで決まる。だからテストが README と直接突き合わせられ、分類を足した PR の CI が
+その場で赤くなる (``tests/test_readme.py``)。件数表の方は書き出したデータを読むので、
+``data`` を持たない CI では確かめようがなく、週次に頼るしかない。
+
+手書きの表を置いていた頃は、分類が 4 から 19 へ増えたときに 10 行のまま取り残された
+(Issue #100)。地の文に写した数と同じで、**誰も検査していないものは静かに嘘になる**。
+"""
+
 HEADERS: Final[tuple[str, ...]] = (
     "分類コード",
     "文化財種別",
@@ -39,6 +58,8 @@ HEADERS: Final[tuple[str, ...]] = (
     "取得対象",
     "収録行数",
 )
+
+DATASETS_HEADERS: Final[tuple[str, ...]] = ("リポジトリ", "取得対象")
 
 
 class ReadmeError(RuntimeError):
@@ -115,16 +136,42 @@ def render_block(counts: Sequence[CategoryCounts]) -> str:
     return "\n".join(lines)
 
 
-def replace_block(text: str, block: str) -> str:
-    """README の差し込み口の中身を入れ替える。外側は 1 文字も動かさない。"""
-    before, opened, rest = text.partition(BEGIN_MARKER)
+def render_datasets_block() -> str:
+    """出力先リポジトリの一覧を ``TARGET_DATASETS`` から組み立てる。
+
+    **データを読まない。** 分類とリポジトリの対応は ``catalog`` だけで決まるので、
+    書き出したデータが手元に無い環境 (CI) でも作れて、突き合わせられる。
+
+    >>> render_datasets_block().splitlines()[3]
+    '| `registered-tangible-cultural-properties` | 101 登録有形文化財（建造物） |'
+    """
+    lines = [
+        DATASETS_BEGIN_MARKER,
+        "| " + " | ".join(DATASETS_HEADERS) + " |",
+        "|" + "---|" * len(DATASETS_HEADERS),
+    ]
+    lines.extend(
+        f"| `{dataset.repo}` | {dataset.category.code} {dataset.name} |"
+        for dataset in TARGET_DATASETS
+    )
+    lines.append(END_MARKER)
+    return "\n".join(lines)
+
+
+def replace_block(text: str, block: str, begin: str = BEGIN_MARKER) -> str:
+    """README の差し込み口の中身を入れ替える。外側は 1 文字も動かさない。
+
+    閉じは差し込み口で共通 (``END_MARKER``)。開きだけで場所が決まるので、
+    ``begin`` に渡したものが**どちらの表か**を決める。
+    """
+    before, opened, rest = text.partition(begin)
     if not opened:
-        raise ReadmeError(f"差し込み口 {BEGIN_MARKER} が無い")
+        raise ReadmeError(f"差し込み口 {begin} が無い")
     _, closed, after = rest.partition(END_MARKER)
     if not closed:
         raise ReadmeError(f"差し込み口の閉じ {END_MARKER} が無い")
-    if BEGIN_MARKER in after:
-        raise ReadmeError("差し込み口が 2 か所以上ある。どこを書き換えるか決まらない")
+    if begin in after:
+        raise ReadmeError(f"差し込み口 {begin} が 2 か所以上ある。どこを書き換えるか決まらない")
     return before + block + after
 
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "heritage-crawler"
 version = "0.1.0"
-description = "国指定文化財等データベースから建造物関連データを抽出・記録するクローラー"
+description = "国指定文化財等データベースの全データを抽出・記録するクローラー"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
