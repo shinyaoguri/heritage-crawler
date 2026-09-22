@@ -349,7 +349,9 @@ heritage-crawler render-readme --check    # 書き換えず、ずれていれば
 ## 開発
 
 Python で実装する ([ADR 0003](docs/decisions/0003-implement-in-python.md))。
-CI と同じ内容をローカルで回せる。
+CI と同じ内容をローカルで回せる。**相手先は公共サイトなので、手を入れる前に
+[CONTRIBUTING.md](CONTRIBUTING.md) の約束事に目を通してほしい** (レートの上限を
+詰めないこと・動作確認に本番を使わないこと)。
 
 ```bash
 pip install -e '.[dev]'   # 初回のみ
