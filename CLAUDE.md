@@ -331,9 +331,12 @@ pytest -q
 ```
 
 CI (`.github/workflows/ci.yml`) ではこれを Python のマトリクスで実行する。
-**PR では最小サポートの 3.12 だけ、main への push では 3.12 / 3.13 / 3.14 の 3 本**
-— Actions の課金はジョブ単位の分切り上げで、20 秒で終わるこのジョブに 3 本 × 1 分が
-引かれていたため。バージョン差は main への push と週次 (`weekly.yml`) で見る。
+**PR でも main への push でも 3.12 / 3.13 / 3.14 の 3 本** (#106)。public リポジトリ
+なので課金されず、並列なので待ちも増えない。バージョン差を見るのはここだけ —
+週次 (`weekly.yml`) は実運用の 3.13 の 1 本で、バージョン差の検査ではない。
+**ruleset の必須チェックは matrix の各ジョブではなくまとめジョブの `check-ok`**。
+バージョンの足し引きは `ci.yml` の変更だけで済み、git に残らない ruleset を
+触らずに済む。
 
 PR タイトルとドキュメントの検査は `.github/workflows/pr-policy.yml` が受け持つ。
 `scripts/check-pr-title.sh` で Conventional Commits 形式を (squash merge でタイトルが
