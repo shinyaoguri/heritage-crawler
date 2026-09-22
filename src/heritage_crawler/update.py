@@ -9,11 +9,12 @@
 生 HTML は週次実行へ持ち回らない (Actions のキャッシュは 7 日で消え、リポジトリにも
 コミットしない。ADR 0006)。台帳 CSV だけは artifact で持ち回る。
 
-取り直すのは 3 種類だけ。
+取り直すのは 4 種類だけ。
 
 1. 台帳に現れた新しいキー (新規指定)
 2. 前回の台帳と値が食い違うキー
-3. 巡回のぶん — 全体の 1/52
+3. データベース側の不具合で満足に取れていないキー — 毎週確かめ直す (ADR 0030)
+4. 巡回のぶん — 全体の 1/52
 
 3 が要るのは、**ソース側に更新日が無く、詳細ページだけの項目 (解説文・員数・
 構造及び形式等など) の変更は取り直して比べるしか捕まえられない**ため。
@@ -37,7 +38,12 @@ from typing import Any, Final
 
 from heritage_crawler.catalog import CATEGORIES_BY_CODE, Category, Dataset
 from heritage_crawler.detail import Presence, Target
-from heritage_crawler.export import REMOVED_FILENAME, Reuse, removal_entry
+from heritage_crawler.export import (
+    REMOVED_FILENAME,
+    SOURCE_ISSUES_FILENAME,
+    Reuse,
+    removal_entry,
+)
 from heritage_crawler.ledger import EXPECTED_CSV_HEADER, LedgerRow, read_csv_rows
 from heritage_crawler.metadata import METADATA_FILENAME, accessed_date
 from heritage_crawler.record import category_of
@@ -202,6 +208,12 @@ class Existing:
     ``missing_since`` が動いて「いつ消えたか」が失われ、記録が毎週揺れる。
     """
 
+    issues: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    """リポジトリ名 → キー → 前回の ``source-issues.jsonl`` の 1 行 (ADR 0030)。
+
+    載っているキーは毎週取り直す。``first_seen`` もここから引き継ぐ。
+    """
+
     files: int = 0
 
 
@@ -221,6 +233,7 @@ def read_existing(output_dir: Path, datasets: Sequence[Dataset]) -> Existing:
     labels: dict[str, dict[str, str]] = {}
     accessed: dict[str, str] = {}
     removed: dict[str, dict[str, dict[str, Any]]] = {}
+    issues: dict[str, dict[str, dict[str, Any]]] = {}
     files = 0
     for dataset in datasets:
         directory = output_dir / dataset.repo / "data"
@@ -248,11 +261,16 @@ def read_existing(output_dir: Path, datasets: Sequence[Dataset]) -> Existing:
         removed[dataset.repo] = (
             {key: entry for _, key, entry in _read_jsonl(path)} if path.exists() else {}
         )
+        path = output_dir / dataset.repo / SOURCE_ISSUES_FILENAME
+        issues[dataset.repo] = (
+            {key: entry for _, key, entry in _read_jsonl(path)} if path.exists() else {}
+        )
     logger.info(
-        "前回の出力を読んだ: %d 件 / %d ファイル (削除の記録 %d 件)",
+        "前回の出力を読んだ: %d 件 / %d ファイル (削除の記録 %d 件 / 不具合の記録 %d 件)",
         len(records),
         files,
         sum(len(entries) for entries in removed.values()),
+        sum(len(entries) for entries in issues.values()),
     )
     return Existing(
         records=records,
@@ -260,6 +278,7 @@ def read_existing(output_dir: Path, datasets: Sequence[Dataset]) -> Existing:
         labels=labels,
         accessed_dates=accessed,
         removed=removed,
+        issues=issues,
         files=files,
     )
 
@@ -299,6 +318,9 @@ class Reason(Enum):
     ADDED = "新規"
     CHANGED = "台帳の値が変わった"
     ROTATED = "巡回"
+    RECHECK = "不具合の再確認"
+    """データベース側の不具合で満足に取れていない (ADR 0030)。相手が直したことに
+    気付けるよう、毎週確かめ直す。1 件につき週 1 リクエストで、負荷は無視できる。"""
 
 
 @dataclass(frozen=True)
@@ -349,6 +371,11 @@ class UpdatePlan:
     presence: dict[str, Presence] = field(default_factory=dict)
     """キー → 詳細ページに問い合わせた結果 (``verify_removals`` が入れる)。"""
 
+    attempted: set[str] = field(default_factory=set)
+    """取り直す ``(台帳ID, 管理対象ID)``。``Refetch.key`` は詳細ページの
+    キー (分類コード基準) なので、出力の行と突き合わせるにはこちらを使う
+    (411 などでは台帳ID と分類コードが違う。#74)。"""
+
     @property
     def targets(self) -> list[Target]:
         return [item.target for item in self.refetch]
@@ -384,6 +411,9 @@ def plan_update(
     plan = UpdatePlan(slot=slot, complete=frozenset(complete_categories))
     changed = diff.changed if diff else {}
     seen: set[str] = set()
+    # 不具合を抱えたキー。途中切れの行は印で、取り直しの失敗は一覧で分かる (ADR 0030)。
+    troubled = {key for entries in existing.issues.values() for key in entries}
+    troubled |= {key for key, record in existing.records.items() if "source_issue" in record}
 
     for row in rows:
         if row.key in seen:  # 同じ棟が複数の地域の CSV に出る (ADR 0008)
@@ -403,10 +433,14 @@ def plan_update(
                 plan.added[identity] = row.key
         elif columns := changed.get(row.key):
             plan.refetch.append(Refetch(target, Reason.CHANGED, columns))
+        elif row.key in troubled:
+            plan.refetch.append(Refetch(target, Reason.RECHECK))
         elif rotation_slot(row.key) == slot:
             plan.refetch.append(Refetch(target, Reason.ROTATED))
         else:
             plan.unchanged += 1
+            continue
+        plan.attempted.add(row.key)
 
     for key in existing.records.keys() - seen:
         code = str(existing.records[key]["ledger_id"])
@@ -537,6 +571,8 @@ def reuse_for(plan: UpdatePlan, existing: Existing, accessed_at: str) -> Reuse:
         removals=_removals(plan, existing, accessed_date(accessed_at)),
         previous_repos=existing.repos,
         previous_removed=existing.removed,
+        previous_issues=existing.issues,
+        attempted=frozenset(plan.attempted),
     )
 
 

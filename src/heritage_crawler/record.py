@@ -540,6 +540,8 @@ class BuildReport:
     stale_files: list[str] = field(default_factory=list)
     removed_files: list[str] = field(default_factory=list)
     """行が 0 件になったので消したファイル (#57)。異常ではないが、黙って消さない。"""
+    source_issues: list[str] = field(default_factory=list)
+    """データベース側の不具合で満足に組み立てられなかったもの (ADR 0030)。**全件を名指しする。**"""
 
     @property
     def has_anomalies(self) -> bool:

@@ -251,7 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, help="先頭から指定件数だけ取る (疎通確認や様子見に使う)"
     )
     detail.add_argument(
-        "--retry-failed", action="store_true", help="失敗として記録されたぶんだけ取り直す"
+        "--retry-failed",
+        action="store_true",
+        help="失敗として記録されたぶんと、途中までしか取れなかったぶんだけ取り直す",
     )
     detail.add_argument(
         "--recheck-cache",
@@ -699,8 +701,11 @@ def _fetch_detail(args: argparse.Namespace, cache: DetailCache, targets: Sequenc
         # 通信しない検査。ここで未取得へ戻したぶんは、そのまま下の取得で拾われる。
         recheck_cache(cache, wanted)
     if args.retry_failed:
+        # 途中までしか取れなかったもの (ADR 0030) も拾い直す。こちらは取得済みの
+        # 扱いなので、下で force を付けないと飛ばされる。
         failed = {
-            detail_key(entry.category_code, entry.kanri_taishou_id) for entry in cache.failures()
+            detail_key(entry.category_code, entry.kanri_taishou_id)
+            for entry in [*cache.failures(), *cache.issues()]
         }
         wanted = [target for target in wanted if target.key in failed]
         if not wanted:
@@ -716,7 +721,7 @@ def _fetch_detail(args: argparse.Namespace, cache: DetailCache, targets: Sequenc
         for _ in range(args.concurrency)
     ]
     try:
-        fetch_details(fetchers, cache, wanted, force=args.force)
+        fetch_details(fetchers, cache, wanted, force=args.force or args.retry_failed)
     except KeyboardInterrupt:
         logger.warning("中断した。取得済みは記録済みなので、同じコマンドで再開できる")
         return 130

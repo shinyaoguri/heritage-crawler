@@ -12,7 +12,7 @@ import pytest
 
 from conftest import area_named, fixture, put_detail, put_ledger
 from heritage_crawler import cli
-from heritage_crawler.cache import DetailCache, LedgerCache
+from heritage_crawler.cache import ISSUE_TRUNCATED, DetailCache, LedgerCache
 from heritage_crawler.catalog import (
     SELECTED,
     TARGET_CATEGORIES,
@@ -180,6 +180,25 @@ def test_詳細の報告は台帳が無くても動く(
 def test_台帳が無いまま詳細を取りに行かない(cache_dir: Path) -> None:
     """対象が無いのに通信を始めない。何をすべきかは報告側に書いてある。"""
     assert main(["--cache-dir", str(cache_dir), "fetch-detail"]) == 1
+
+
+def test_失敗の拾い直しは途中までしか取れなかったぶんも取り直す(
+    cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """途中切れは取得済みの扱いなので、force を付けないと飛ばされる (ADR 0030)。"""
+    put_ledger(LedgerCache(cache_dir), SELECTED, area_named("京都府"), ["16", "17"])
+    detail = DetailCache(cache_dir)
+    put_detail(detail, SELECTED, "16", fixture("detail_103.html"))
+    put_detail(detail, SELECTED, "17", fixture("detail_103.html"), issue=ISSUE_TRUNCATED)
+    called: dict[str, object] = {}
+
+    def fake_fetch(fetchers, cache, targets, *, force):  # type: ignore[no-untyped-def]
+        called.update(keys=[target.key for target in targets], force=force)
+
+    monkeypatch.setattr(cli, "fetch_details", fake_fetch)
+
+    assert main(["--cache-dir", str(cache_dir), "fetch-detail", "--retry-failed"]) == 0
+    assert called == {"keys": ["103/17"], "force": True}
 
 
 def test_台帳が無ければ組み立ては失敗させる(cache_dir: Path, tmp_path: Path) -> None:

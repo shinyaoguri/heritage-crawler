@@ -16,12 +16,18 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from heritage_crawler.cache import DetailCache, LedgerCache, atomic_write, detail_key
+from heritage_crawler.cache import (
+    DetailCache,
+    DetailEntry,
+    LedgerCache,
+    atomic_write,
+    detail_key,
+)
 from heritage_crawler.catalog import (
     KIND_SPLIT_CATEGORIES,
     TARGET_DATASETS,
@@ -30,6 +36,7 @@ from heritage_crawler.catalog import (
     Dataset,
     datasets_for,
     datasets_of,
+    detail_url,
     search_areas,
 )
 from heritage_crawler.detail_page import DetailPage, ParseError, parse_detail_page
@@ -133,6 +140,21 @@ class Reuse:
     「いつ消えたか」が失われる。
     """
 
+    previous_issues: Mapping[str, Mapping[str, Mapping[str, Any]]] = field(default_factory=dict)
+    """リポジトリ名 → キー → 前回の ``source-issues.jsonl`` の 1 行 (ADR 0030)。
+
+    ``first_seen`` を引き継ぐために読む。問題が続いている週に書き直すと
+    「いつから壊れているか」が失われる。
+    """
+
+    attempted: Collection[str] = frozenset()
+    """今回詳細ページを取り直そうとした ``(台帳ID, 管理対象ID)`` (ADR 0030)。
+
+    取り直しに失敗して前回の行を使った (= 古いまま) かどうかは、これと
+    キャッシュを突き合わせないと分からない。キャッシュの失敗の記録だけを
+    見ると、手元に残った昔の失敗まで拾ってしまう。
+    """
+
 
 def build_dataset(
     ledger_cache: LedgerCache,
@@ -157,6 +179,7 @@ def build_dataset(
     labels: dict[Dataset, dict[str, str]] = defaultdict(dict)
     latest_fetch: dict[Dataset, str] = defaultdict(str)
     seen: set[str] = set()
+    issues: dict[str, SourceIssue] = {}
     if reuse is not None:
         for dataset in datasets_for(categories):
             labels[dataset].update(reuse.labels.get(dataset.repo, {}))
@@ -168,14 +191,24 @@ def build_dataset(
         seen.add(row.key)
         report.total += 1
 
-        built = _built(row, detail_cache, reuse, report)
+        built, issue = _built(row, detail_cache, reuse, report)
         if built is None:
+            if issue is not None:
+                # 行は書けないが、名指しはする。書き先が決まるのは振り分けが
+                # 種別に依存しない分類だけ (102 の国宝を重要文化財側で名指ししない)。
+                if row.category not in KIND_SPLIT_CATEGORIES:
+                    issue.repos.update(dataset.repo for dataset in datasets_of(row.category))
+                issues[row.key] = issue
             continue
         fetched_at = _fetched_at(detail_cache, row.category.code, row.get("管理対象ID"))
         for dataset in _datasets_of(row.category, built.record, report):
             groups[(dataset, built.location.area)].append(built.record)
             labels[dataset].update(built.labels)
             latest_fetch[dataset] = max(latest_fetch[dataset], fetched_at)
+            if issue is not None:
+                issue.repos.add(dataset.repo)
+        if issue is not None:
+            issues[row.key] = issue
         report.built += 1
         if report.built % PROGRESS_EVERY == 0:
             logger.info("%d 件組み立てた", report.built)
@@ -206,6 +239,9 @@ def build_dataset(
     # **消したファイルも「行が動いた」** — 利用日を据え置くとその週だけ日付が止まる。
     touched |= _settle_stale_files(output_dir, categories, groups, report, areas=areas)
     touched |= _write_removed(output_dir, categories, groups, report, reuse=reuse, seen=seen)
+    # **一覧の変化は touched に入れない。** データを取り出し直したわけではないので、
+    # 利用日を動かす理由にならない (途中切れの行が加わった週は、行の変化で動く)。
+    _write_issues(output_dir, categories, issues, report, reuse=reuse, seen=seen)
 
     version = generator_version()
     for dataset, entries in written.items():
@@ -272,26 +308,44 @@ def _datasets_of(
 
 def _built(
     row: LedgerRow, detail_cache: DetailCache, reuse: Reuse | None, report: BuildReport
-) -> Built | None:
+) -> tuple[Built | None, SourceIssue | None]:
     """台帳の 1 行をレコードにする。**キャッシュが先、前回の出力は控え**。
 
     差分更新では大半の行の詳細ページを取り直さないので、キャッシュに無いぶんは
     前回の出力で埋まる。取得に失敗した 1 件も前回の行が残るだけで済み、
     **失敗が行の消失にならない** (ADR 0018)。
+
+    あわせて、データベース側の不具合で満足に組み立てられなかったことを返す
+    (ADR 0030)。**途中で切れたページは、前回の完全な行を上書きしない** —
+    欠けた行に置き換えるより、古くても揃った行を残して「古い」と名指しする方がよい。
     """
     # キャッシュは分類コードで引く。台帳ID には複数の分類が同居する (#74)。
     category_code, managed_id = row.category.code, row.get("管理対象ID")
+    entry = detail_cache.entries.get(detail_key(category_code, managed_id))
     fetched = detail_cache.is_done(category_code, managed_id)
-    if fetched:
+    issue = entry.issue if fetched and entry is not None else ""
+    previous = reuse.records.get(row.key) if reuse is not None else None
+    attempted = reuse is not None and row.key in reuse.attempted
+
+    if fetched and not (issue and previous is not None and "source_issue" not in previous):
         page = _read_page(detail_cache, category_code, managed_id, report)
         if page is not None:
-            return build_record(row, page, report)
-    if reuse is not None and (record := reuse.records.get(row.key)) is not None:
+            built = build_record(row, page, report, issue)
+            found = _issue(row, entry, ISSUE_KIND_TRUNCATED, built.record) if issue else None
+            return built, found
+    if previous is not None:
         report.reused += 1
-        return _reused(record)
+        found = None
+        if attempted and (issue or not fetched):
+            # 取り直そうとして満足に取れなかった。行の中身は前回のまま。
+            kind = ISSUE_KIND_TRUNCATED if "source_issue" in previous else ISSUE_KIND_STALE
+            found = _issue(row, entry, kind, previous)
+        return _reused(previous), found
     if not fetched:
         report.missing_html += 1
-    return None
+        if entry is not None and not entry.ok and (reuse is None or attempted):
+            return None, _issue(row, entry, ISSUE_KIND_UNAVAILABLE, None)
+    return None, None
 
 
 def _reused(record: Mapping[str, Any]) -> Built:
@@ -494,13 +548,16 @@ def _write_removed(
 
         report.removed_records += sum(1 for key in entries if key not in previous)
         report.restored_records += restored
-        if _put_removed(output_dir / dataset.repo / REMOVED_FILENAME, entries, report):
+        if _put_state_file(output_dir / dataset.repo / REMOVED_FILENAME, entries, report):
             moved.add(dataset)
     return moved
 
 
-def _put_removed(path: Path, entries: dict[str, dict[str, Any]], report: BuildReport) -> bool:
-    """記録を書き出す。0 件ならファイルごと消す。動いたかどうかを返す。
+def _put_state_file(
+    path: Path, entries: Mapping[str, Mapping[str, Any]], report: BuildReport
+) -> bool:
+    """状態型の記録 (``removed.jsonl`` / ``source-issues.jsonl``) を書き出す。
+    0 件ならファイルごと消す。動いたかどうかを返す。
 
     「0 件 = ファイルが無い」は出力の不変条件 (#57 / ADR 0013)。空ファイルを
     残すと「まだ調べていない」と見分けが付かない。
@@ -521,6 +578,134 @@ def _put_removed(path: Path, entries: dict[str, dict[str, Any]], report: BuildRe
     return True
 
 
+SOURCE_ISSUES_FILENAME: Final = "source-issues.jsonl"
+"""データベース側の不具合の一覧 (ADR 0030)。**データリポジトリのルートに置く。**
+
+``removed.jsonl`` と同じ理由で ``data/`` の下には置かない (閲覧サイトの配信が
+止まる)。**状態型** — 並ぶのは「いま問題があるもの」だけで、相手が直せば行は
+消え、0 件ならファイルごと消える。経緯は git 履歴が持つ。
+"""
+
+ISSUE_KIND_TRUNCATED: Final = "truncated"
+"""詳細ページが途中までしか描かれていない。行は ``data/`` にあり、印が付く。"""
+
+ISSUE_KIND_STALE: Final = "stale"
+"""取り直しに失敗し、前回の行をそのまま使っている。行の中身は前回取れたもの。"""
+
+ISSUE_KIND_UNAVAILABLE: Final = "unavailable"
+"""一度も取れていない。行は ``data/`` に無い。"""
+
+
+@dataclass
+class SourceIssue:
+    """データベース側の不具合 1 件。``source-issues.jsonl`` の 1 行になる。"""
+
+    ledger_id: str
+    managed_id: str
+    category_code: str
+    name: str
+    kind: str
+    http_status: int
+    fetched_at: str
+    """問題を観測した取得の日時。前回の一覧に無いときの ``first_seen`` になる。"""
+    repos: set[str] = field(default_factory=set)
+    """書き先のリポジトリ名。空なら報告にだけ出す。"""
+
+    @property
+    def key(self) -> str:
+        return f"{self.ledger_id}/{self.managed_id}"
+
+    def entry(self, first_seen: str) -> dict[str, Any]:
+        return {
+            "ledger_id": self.ledger_id,
+            "managed_id": self.managed_id,
+            "category_code": self.category_code,
+            "name": self.name,
+            "url": detail_url(self.category_code, self.managed_id),
+            "kind": self.kind,
+            "http_status": self.http_status,
+            "in_data": self.kind != ISSUE_KIND_UNAVAILABLE,
+            "first_seen": first_seen,
+        }
+
+
+def _issue(
+    row: LedgerRow, entry: DetailEntry | None, kind: str, record: Mapping[str, Any] | None
+) -> SourceIssue:
+    if record is not None:
+        name = " ".join(
+            str(part) for part in (record.get("name"), record.get("ridge_name")) if part
+        )
+    else:
+        name = " ".join(part for part in (row.get("名称"), row.get("棟名")) if part)
+    return SourceIssue(
+        ledger_id=row.get("台帳ID"),
+        managed_id=row.get("管理対象ID"),
+        category_code=row.category.code,
+        name=name,
+        kind=kind,
+        http_status=entry.http_status if entry is not None else 0,
+        fetched_at=entry.fetched_at if entry is not None else "",
+    )
+
+
+def _write_issues(
+    output_dir: Path,
+    categories: Sequence[Category],
+    issues: Mapping[str, SourceIssue],
+    report: BuildReport,
+    *,
+    reuse: Reuse | None,
+    seen: set[str],
+) -> None:
+    """``source-issues.jsonl`` を書き、報告に全件を名指しする (ADR 0030)。
+
+    **``reuse`` が無いときは書かない** (報告には出す)。``build-records`` の全件
+    組み立て直しはキャッシュしか読まないので、「取り直しに失敗して前回の行を
+    使っている」も「いつから壊れているか」も再現できない — ``removed.jsonl`` を
+    触らないのと同じ理由 (ADR 0021)。行の印 (``source_issue``) はそちらでも付く。
+    """
+    previous_by_key: dict[str, Mapping[str, Any]] = {}
+    for entries in (reuse.previous_issues.values() if reuse else ()):
+        for key, entry in entries.items():
+            previous_by_key.setdefault(key, entry)
+
+    for key in sorted(issues):
+        issue = issues[key]
+        first_seen = _first_seen(previous_by_key.get(key), issue, reuse)
+        where = "・".join(sorted(issue.repos)) or "書き先なし"
+        label = " ".join(part for part in (key, issue.name, issue.kind) if part)
+        report.source_issues.append(
+            f"{label} (HTTP {issue.http_status or '応答なし'}、{first_seen} から、{where})"
+        )
+    if reuse is None:
+        return
+
+    for dataset in datasets_for(categories):
+        entries = {
+            # 今回見ていないキー (地域を絞った実行) は前回の記録をそのまま残す。
+            # 見たうえで問題が無かったキーは消える (状態型)。
+            key: dict(entry)
+            for key, entry in reuse.previous_issues.get(dataset.repo, {}).items()
+            if key not in seen and key in reuse.records
+        }
+        for key, issue in issues.items():
+            if dataset.repo in issue.repos:
+                entries[key] = issue.entry(_first_seen(previous_by_key.get(key), issue, reuse))
+        _put_state_file(output_dir / dataset.repo / SOURCE_ISSUES_FILENAME, entries, report)
+
+
+def _first_seen(previous: Mapping[str, Any] | None, issue: SourceIssue, reuse: Reuse | None) -> str:
+    """問題を最初に観測した日 (日本時間)。**種類が変わっても引き継ぐ。**
+
+    途中切れと取り直しの失敗を行き来しても、壊れ始めた日は変わらない。
+    """
+    if previous is not None and previous.get("first_seen"):
+        return str(previous["first_seen"])
+    fetched_at = issue.fetched_at or (reuse.accessed_at if reuse else "")
+    return accessed_date(fetched_at) if fetched_at else ""
+
+
 def format_report(report: BuildReport) -> str:
     """組み立て結果を人が読める形にする。異常は件数と実例を並べる。"""
     lines = [
@@ -539,6 +724,13 @@ def format_report(report: BuildReport) -> str:
     if report.missing_html:
         lines.append("未取得ぶんは fetch-detail で取れる")
 
+    lines.extend(
+        _anomaly_lines(
+            f"データベース側の不具合 ({SOURCE_ISSUES_FILENAME})",
+            report.source_issues,
+            limit=len(report.source_issues),
+        )
+    )
     lines.extend(_anomaly_lines("読めなかったページ", report.parse_failures))
     lines.extend(_counter_lines("対応表に無いラベル", report.unknown_labels))
     lines.extend(_counter_lines("日付として読めない値", report.invalid_dates))

@@ -20,7 +20,7 @@ import pytest
 from conftest import make_csv, make_row
 from heritage_crawler.catalog import DESIGNATED, MONUMENTS, REGISTERED, Category, datasets_for
 from heritage_crawler.detail import Presence
-from heritage_crawler.export import REMOVED_FILENAME
+from heritage_crawler.export import REMOVED_FILENAME, SOURCE_ISSUES_FILENAME
 from heritage_crawler.ledger import LedgerRow
 from heritage_crawler.metadata import METADATA_FILENAME
 from heritage_crawler.update import (
@@ -235,6 +235,19 @@ class Test前回の出力の読み戻し:
 
         assert existing.removed["historic-sites"]["401/9"]["missing_since"] == "2026-08-03"
 
+    def test_前回の不具合の記録も読む(self, tmp_path: Path) -> None:
+        """載っているキーは毎週確かめ直し、`first_seen` も引き継ぐ (ADR 0030)。"""
+        write_records(tmp_path, "historic-sites", "13_tokyo.jsonl", [record(ledger_id="401")])
+        path = tmp_path / "historic-sites" / SOURCE_ISSUES_FILENAME
+        path.write_text(
+            '{"ledger_id": "401", "managed_id": "9", "first_seen": "2026-08-23"}\n',
+            encoding="utf-8",
+        )
+
+        existing = read_existing(tmp_path, datasets_for([MONUMENTS]))
+
+        assert existing.issues["historic-sites"]["401/9"]["first_seen"] == "2026-08-23"
+
     def test_出力が無ければ空(self, tmp_path: Path) -> None:
         assert read_existing(tmp_path, datasets_for([MONUMENTS])).records == {}
 
@@ -342,6 +355,35 @@ class Test計画:
         )
 
         assert plan.unchanged == 1
+
+    def test_不具合を抱えた行は毎週確かめ直す(self) -> None:
+        """相手が直したことに気付けるよう、巡回の枠を待たない (ADR 0030)。
+
+        途中切れの行は印で、取り直しの失敗は一覧で分かる。新規と台帳の変化の方が
+        優先で、取り直すことに変わりはない。
+        """
+        records = self.existing().records
+        records["101/keep"]["source_issue"] = "詳細ページの一部が欠けている"
+        records["101/changed"]["source_issue"] = "詳細ページの一部が欠けている"
+        # 一覧にしか載っていないキー (取り直しの失敗) も拾う。台帳から消えたキーは
+        # 取り直さない (落とすかどうかは存在確認が決める)。
+        issues = {"registered-tangible-cultural-properties": {"101/rotate": {}, "101/gone": {}}}
+
+        plan = plan_update(
+            Existing(records=records, issues=issues),
+            self.rows(),
+            slot=99,
+            complete_categories=ALL_CATEGORIES,
+            diff=LedgerDiff(changed={"101/changed": ("名称",)}),
+        )
+
+        assert {item.key: item.reason for item in plan.refetch} == {
+            "101/added": Reason.ADDED,
+            "101/changed": Reason.CHANGED,
+            "101/keep": Reason.RECHECK,
+            "101/rotate": Reason.RECHECK,
+        }
+        assert plan.attempted == {"101/added", "101/changed", "101/keep", "101/rotate"}
 
     def test_手を入れるところが無ければ空(self) -> None:
         plan = plan_update(Existing(), [], slot=0, complete_categories=ALL_CATEGORIES)
