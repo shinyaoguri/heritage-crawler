@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import make_row
+from heritage_crawler.cache import ISSUE_TRUNCATED
 from heritage_crawler.catalog import (
     CONSERVATION_TECHNIQUES,
     DESIGNATED,
@@ -638,3 +639,36 @@ def test_世界遺産の関連情報は他分類へのリンク() -> None:
 
     assert built.record["has_related_properties"] is True
     assert not report.unknown_labels
+
+
+def test_途中で切れたページの行には不具合の印を付ける() -> None:
+    """相手が途中まで描いて落ちたページ (#107 / ADR 0030)。
+
+    切れた位置より後ろ (関連情報・一覧のモーダル・写真) は取れていない。「無い」と
+    断定する値を書くと、取れなかったものが「無い」に化ける。
+    """
+    report = BuildReport()
+    built = build_record(
+        row(WORLD_HERITAGE, 名称="佐渡島の金山"),
+        DetailPage(
+            fields={"名称": "佐渡島の金山", "所在都道府県": "新潟県"},
+            related={"附指定": True},
+            has_photo=False,
+        ),
+        report,
+        issue=ISSUE_TRUNCATED,
+    )
+
+    assert built.record["source_issue"] == "詳細ページの一部が欠けている"
+    assert not [key for key in built.record if key.startswith("has_")]
+    assert built.record["name"] == "佐渡島の金山"  # 取れたところは採る
+    assert built.labels["source_issue"] == "データベース側の不具合"
+    assert list(built.record)[-1] == "source_issue"
+    assert not report.missing_rellists  # 一覧が無いのは切れたからで、取りこぼしではない
+
+
+def test_不具合が無ければ印は付けない() -> None:
+    record, _ = build(row(), page())
+
+    assert "source_issue" not in record
+    assert record["has_photo"] is False
