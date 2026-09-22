@@ -23,10 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # **PR では最小サポートの 3.12 だけを回す。** Actions の課金はジョブ単位の
-        # 分切り上げで、このジョブは 1 回あたり 20 秒しかかからないのに 3 本 × 1 分が
-        # 引かれていた。バージョン差は main への push と週次 (weekly.yml) で見る。
-        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.12", "3.13", "3.14"]') }}
+        # pyproject.toml の classifiers と揃える。PR でも main への push でも同じ
+        # 3 本を回す (public リポジトリなので課金されず、並列なので待ちも増えない)。
+        # 足し引きしても ruleset は直さなくてよい — 必須チェックは下の check-ok。
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v7
@@ -47,3 +47,17 @@ jobs:
       # 外部サイトへアクセスするテストは置かない (CI からデータベースを叩かない)。
       - name: テスト (pytest)
         run: pytest -q
+
+  # ruleset の required status check はこのジョブ (と pr-policy) だけにしてある。
+  # matrix の各ジョブ (check (3.12) など) を直接必須にすると、バージョンを
+  # 入れ替えるたびに git に残らない ruleset を手で直すことになる。
+  #
+  # if: always() を外さないこと。外すと check が落ちたときこのジョブは skipped に
+  # なり、skipped は必須チェックを満たしたものとして扱われる。
+  check-ok:
+    if: always()
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: matrix の全バージョンが通ったか
+        run: test "${{ needs.check.result }}" = success

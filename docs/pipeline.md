@@ -165,7 +165,8 @@ Pages は最後に成功したデプロイを配り続けるので、壊れた�
 
 | 走るもの | いつ | 何を |
 |---|---|---|
-| `.github/workflows/ci.yml` | PR と push | ruff / mypy / pytest (doctest 込み) / `scripts/check-freshness.sh` / PR タイトル。Python 3.12・3.13・3.14 |
+| `.github/workflows/ci.yml` | PR と push | ruff / mypy / pytest (doctest 込み)。Python 3.12・3.13・3.14 |
+| `.github/workflows/pr-policy.yml` | PR (タイトルの編集でも) | PR タイトル / `scripts/check-freshness.sh` / 判定スクリプト自体のテスト |
 | `.github/workflows/freshness.yml` | 月次 | ドキュメントの参照ドリフト (Issue の状態はコミット無しに変わる) |
 | `.github/workflows/reachability.yml` | 手で押したときだけ | 週次が使う 3 経路の疎通 (**唯一データベースへ出る検査**) |
 
